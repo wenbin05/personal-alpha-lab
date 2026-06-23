@@ -1,0 +1,37 @@
+ticker,name,sector
+SPY,SPDR S&P 500 ETF Trust,Benchmark
+QQQ,Invesco QQQ Trust,Benchmark
+IWM,iShares Russell 2000 ETF,Benchmark
+AAPL,Apple Inc.,Technology
+MSFT,Microsoft Corporation,Technology
+NVDA,NVIDIA Corporation,Technology
+AMD,Advanced Micro Devices Inc.,Technology
+AVGO,Broadcom Inc.,Technology
+META,Meta Platforms Inc.,Communication Services
+GOOGL,Alphabet Inc.,Communication Services
+AMZN,Amazon.com Inc.,Consumer Discretionary
+TSLA,Tesla Inc.,Consumer Discretionary
+PLTR,Palantir Technologies Inc.,Technology
+ARM,Arm Holdings plc,Technology
+SMCI,Super Micro Computer Inc.,Technology
+MU,Micron Technology Inc.,Technology
+CRWD,CrowdStrike Holdings Inc.,Technology
+NET,Cloudflare Inc.,Technology
+COIN,Coinbase Global Inc.,Financials
+HOOD,Robinhood Markets Inc.,Financials
+SOFI,SoFi Technologies Inc.,Financials
+SHOP,Shopify Inc.,Technology
+UBER,Uber Technologies Inc.,Industrials
+RBLX,Roblox Corporation,Communication Services
+DKNG,DraftKings Inc.,Consumer Discretionary
+SE,Sea Limited,Communication Services
+TSM,Taiwan Semiconductor Manufacturing Company,Technology
+JPM,JPMorgan Chase & Co.,Financials
+XLF,Financial Select Sector SPDR Fund,Sector ETF
+XLK,Technology Select Sector SPDR Fund,Sector ETF
+XLE,Energy Select Sector SPDR Fund,Sector ETF
+XLU,Utilities Select Sector SPDR Fund,Sector ETF
+XLV,Health Care Select Sector SPDR Fund,Sector ETF
+XLY,Consumer Discretionary Select Sector SPDR Fund,Sector ETF
+XLI,Industrial Select Sector SPDR Fund,Sector ETF
+

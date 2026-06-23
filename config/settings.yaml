@@ -1,0 +1,31 @@
+database_path: data/alpha_lab.db
+market_data_provider: yfinance
+universe_path: config/universe.csv
+default_history_period: 2y
+default_benchmark: SPY
+market_timezone: America/New_York
+user_timezone: Asia/Singapore
+
+scanner:
+  max_tickers: 35
+  min_price: 5.0
+  min_avg_dollar_volume: 10000000
+  lookback_period: 2y
+
+risk:
+  default_portfolio_size: 100000
+  default_risk_per_trade_pct: 0.75
+  max_position_pct: 10
+  max_open_positions: 8
+  max_sector_exposure_pct: 35
+
+backtest:
+  initial_capital: 100000
+  default_slippage_bps: 10
+  commission_per_trade: 0
+
+llm:
+  provider: ""
+  model: ""
+  max_input_chars: 12000
+  timeout_seconds: 60
