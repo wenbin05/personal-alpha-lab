@@ -13,6 +13,7 @@ from src.catalysts.models import CatalystEvent
 from src.catalysts.sec_classification import SEC_FEATURE_POLICY_VERSION, classify_ticker_sec_filings
 from src.data import storage
 from src.datasets.backfill import (
+    CACHE_ONLY_PROVIDER,
     _coverage_warnings,
     create_backfill_run,
     dataset_sufficiency_report,
@@ -21,6 +22,7 @@ from src.datasets.backfill import (
     retry_failed_items,
 )
 from src.datasets.builder import (
+    _publication_overlaps_window,
     _sec_filing_features,
     _sec_metadata_rows_as_of,
     active_catalysts_as_of,
@@ -28,6 +30,7 @@ from src.datasets.builder import (
     build_point_in_time_dataset,
     calculate_outcome_labels,
     feature_columns_from_frame,
+    precompute_feature_sets_for_dates,
     precompute_sec_features_for_dates,
 )
 from src.datasets.feature_manifest import FEATURE_CONTRACT_VERSION, MANIFEST_METADATA_KEY, role_sets_from_frame
@@ -44,6 +47,7 @@ from src.documents.repository import build_source_document, insert_document
 from src.extractions.repository import approve_extraction, insert_extraction
 from src.features.catalyst import get_catalyst_features
 from src.scoring.score_engine import score_ticker_from_features
+from src.scoring.score_engine import build_feature_set
 
 
 def _price_frame(start: str = "2024-01-02", periods: int = 50, base: float = 100.0, step: float = 1.0) -> pd.DataFrame:
@@ -68,6 +72,31 @@ def _seed_prices(db_path, ticker: str = "AAPL") -> None:
     storage.upsert_ohlcv(db_path, "QQQ", _price_frame(base=300, step=0.4))
     storage.upsert_ohlcv(db_path, "IWM", _price_frame(base=200, step=0.2))
     storage.upsert_ohlcv(db_path, "^VIX", _price_frame(base=15, step=0.0))
+
+
+def test_precomputed_feature_sets_match_legacy_daily_feature_path(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    storage.upsert_ohlcv(db_path, "AAPL", _price_frame(periods=90, base=100, step=1.2))
+    storage.upsert_ohlcv(db_path, "SPY", _price_frame(periods=90, base=400, step=0.4))
+    ticker_df = storage.load_ohlcv(db_path, "AAPL")
+    spy_df = storage.load_ohlcv(db_path, "SPY")
+    sample_dates = [pd.Timestamp("2024-02-15").date(), pd.Timestamp("2024-03-15").date()]
+
+    precomputed = precompute_feature_sets_for_dates("AAPL", ticker_df, spy_df, sample_dates)
+
+    for trading_date in sample_dates:
+        expected = build_feature_set(
+            "AAPL",
+            ticker_df[ticker_df.index <= pd.Timestamp(trading_date)],
+            spy_df[spy_df.index <= pd.Timestamp(trading_date)],
+        )
+        actual = precomputed[trading_date]
+        for key, expected_value in expected.items():
+            actual_value = actual.get(key)
+            if isinstance(expected_value, float):
+                assert actual_value == pytest.approx(expected_value)
+            else:
+                assert actual_value == expected_value
 
 
 def _document_id(db_path, ticker: str = "AAPL") -> int:
@@ -567,6 +596,21 @@ def test_publication_active_window_before_during_after_and_superseded(tmp_path) 
     assert after_superseded.empty
 
 
+def test_zero_duration_publication_window_does_not_trigger_historical_overlap() -> None:
+    publication = {
+        "publication_status": "reverted",
+        "published_at": "2026-06-20T14:56:12+00:00",
+        "reverted_at": "2026-06-20T14:56:12+00:00",
+        "updated_at": "2026-06-20T14:56:12+00:00",
+    }
+
+    assert not _publication_overlaps_window(
+        publication,
+        datetime(2023, 6, 19, tzinfo=UTC),
+        datetime(2026, 6, 23, tzinfo=UTC),
+    )
+
+
 def test_chronological_splits_never_overlap_and_respect_gap(tmp_path) -> None:
     dates = [pd.Timestamp(value).date() for value in pd.bdate_range("2024-01-02", periods=10)]
     splits = chronological_split_dates(dates, dates[3], dates[6], gap_sessions=1)
@@ -713,6 +757,30 @@ def test_backfill_expands_cache_without_overwriting_existing_overlap(tmp_path, m
         assert after.loc[idx, "close"] == row["close"]
     assert after.loc[pd.Timestamp("2024-01-02"), "close"] == 500.0
     assert after.loc[pd.Timestamp("2024-01-05"), "close"] == 530.0
+
+
+def test_backfill_cache_only_mode_does_not_call_provider_for_missing_ranges(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    _seed_prices(db_path, "SPY")
+
+    def fail_provider(_name):
+        raise AssertionError("provider should not be called in cache-only mode")
+
+    monkeypatch.setattr("src.datasets.backfill.market_data.get_provider", fail_provider)
+
+    run_id = create_backfill_run(
+        db_path,
+        ["AAPL"],
+        date(2024, 1, 10),
+        date(2024, 1, 18),
+        provider_name=CACHE_ONLY_PROVIDER,
+    )
+    result = process_backfill_run(db_path, run_id, provider_name=CACHE_ONLY_PROVIDER, output_dir=tmp_path)
+    items = list_backfill_items(db_path, run_id)
+
+    assert result.failed_tickers == 1
+    assert items.iloc[0]["status"] == "failed"
+    assert "no OHLCV data" in str(items.iloc[0]["error"])
 
 
 def test_backfill_coverage_warnings_use_trading_calendar_dates() -> None:

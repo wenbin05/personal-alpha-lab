@@ -16,9 +16,12 @@ from src.datasets.builder import (
     FEATURE_VERSION,
     build_feature_snapshot,
     calculate_outcome_labels,
+    clear_dataset_build_caches,
     dataset_hash,
     label_definitions,
+    precompute_feature_sets_for_dates,
     precompute_catalyst_overrides_for_dates,
+    precompute_earnings_features_for_dates,
     precompute_market_regimes_for_dates,
     precompute_sec_features_for_dates,
 )
@@ -38,6 +41,7 @@ from src.utils.trading_calendar import next_trading_day, trading_days_between
 
 
 PRICE_ADJUSTMENT_CONVENTION = "yfinance daily OHLCV with auto_adjust=False; close and adj_close stored separately"
+CACHE_ONLY_PROVIDER = "cache_only"
 
 
 @dataclass
@@ -165,6 +169,15 @@ def _history_with_cache_first(
     }
     if _cached_covers_range(cached, start_date, end_date):
         return cached, metadata
+
+    if provider_name == CACHE_ONLY_PROVIDER:
+        return cached, {
+            **metadata,
+            "source": "partial_cache_no_download" if cached is not None and not cached.empty else "cache_miss_no_download",
+            "fetch_timestamp": _now_iso(),
+            "download_errors": ["Cache-only dataset build mode; missing ranges were not downloaded."],
+            "cached_rows_after": int(len(cached)),
+        }
 
     missing_ranges = _missing_trading_ranges(cached, start_date, end_date)
     missing_dates = {value.isoformat() for start, end in missing_ranges for value in trading_days_between(start, end)}
@@ -456,6 +469,10 @@ def _process_ticker(
     sec_start = time.perf_counter()
     sec_feature_map = precompute_sec_features_for_dates(db_path, ticker, snapshot_dates)
     sec_seconds = time.perf_counter() - sec_start
+    earnings_start = time.perf_counter()
+    earnings_feature_map = precompute_earnings_features_for_dates(db_path, ticker, snapshot_dates)
+    earnings_seconds = time.perf_counter() - earnings_start
+    feature_set_map = precompute_feature_sets_for_dates(ticker, ticker_df, spy_df, snapshot_dates)
     catalyst_override_map = precompute_catalyst_overrides_for_dates(db_path, ticker, snapshot_dates)
     if regime_feature_map is None:
         regime_feature_map = precompute_market_regimes_for_dates(histories, snapshot_dates)
@@ -470,8 +487,10 @@ def _process_ticker(
             trading_date,
             histories,
             sec_features_override=sec_feature_map.get(trading_date),
+            earnings_features_override=earnings_feature_map.get(trading_date),
             regime_override=regime_feature_map.get(trading_date),
             catalyst_features_override=catalyst_override_map.get(trading_date),
+            feature_set_override=feature_set_map.get(trading_date),
         )
         if snapshot is None:
             warnings.append(f"{ticker} {trading_date}: snapshot unavailable.")
@@ -505,6 +524,7 @@ def _process_ticker(
     metadata["performance"] = {
         "total_seconds": round(time.perf_counter() - ticker_start, 3),
         "sec_aggregation_seconds": round(sec_seconds, 3),
+        "earnings_aggregation_seconds": round(earnings_seconds, 3),
         "snapshot_write_seconds": round(snapshot_write_seconds, 3),
         "peak_rss_mb": _peak_rss_mb(),
     }
@@ -512,6 +532,7 @@ def _process_ticker(
     last_date = max(snapshot_dates).isoformat() if snapshot_dates else None
     metadata["first_date"] = first_date
     metadata["last_date"] = last_date
+    clear_dataset_build_caches()
     return len(snapshots), metadata, warnings
 
 
@@ -644,6 +665,8 @@ def process_backfill_run(
                 warning=warning,
                 completed_at=_now_iso(),
             )
+        finally:
+            clear_dataset_build_caches()
         processed += 1
 
     _update_run_progress(db_path, run_id)

@@ -12,7 +12,8 @@ This project is for personal research and paper trading only. It is not financia
 
 - Market regime dashboard for SPY, QQQ, IWM, QQQ/SPY, IWM/SPY, and VIX when available.
 - Daily ranked watchlist with explainable 0-100 alpha scores, including auditable catalyst contribution.
-- Catalyst Center for manual notes, SEC filing metadata, earnings metadata, and future provider adapters.
+- Catalyst Center for manual notes, SEC filing metadata, and future provider adapters.
+- Historical earnings-event ingestion for point-in-time dataset features, using yfinance best-effort data or CSV import.
 - Documents / Text ingestion page for local source documents, manual pasted text, CSV imports, and optional SEC filing text fetches.
 - LLM Review page for fallback and optional OpenAI extraction, with manual approve/reject/supersede workflow.
 - Review-only catalyst proposals and extraction-to-catalyst audit links that remain separate from active catalyst scoring.
@@ -144,7 +145,10 @@ SQLite tables are created automatically:
 - `scan_results`: latest scanner runs
 - `trade_journal`: local paper trade journal
 - `manual_catalysts`: user-entered catalyst notes
-- `catalysts`: provider-agnostic catalyst/event records for manual notes, SEC metadata, earnings metadata, news placeholders, and future adapters
+- `catalysts`: provider-agnostic catalyst/event records for manual notes, SEC metadata, news placeholders, and future adapters
+- `earnings_events`: provider-agnostic historical earnings events with EPS/revenue fields, announcement/availability timestamps, provider payload hashes, quality warnings, and deterministic dedupe keys
+- `earnings_event_revisions`: immutable change history when a provider revises a previously stored earnings event
+- `earnings_response_cache`: local cache for best-effort earnings-provider responses
 - `source_documents`: provider-agnostic source text records linked to tickers and optionally to catalyst events
 - `llm_extractions`: provider-agnostic extraction records, review statuses, evidence snippets, and reviewer notes
 - `catalyst_proposals`: reviewed proposal drafts mapped deterministically from approved extractions
@@ -193,7 +197,7 @@ Historical datasets filter catalysts and filings with `available_at`, not the la
 
 SEC filing metadata can optionally fetch and store source text through the Documents / Text layer. The app stores cleaned text for preview and future extraction, but it does not interpret filing text with NLP or LLMs yet.
 
-The earnings adapter uses best-effort yfinance metadata. Earnings dates and EPS fields may be absent, stale, or empty. If the provider cannot return data, the app shows a warning and continues to support manual entry.
+The historical earnings adapter uses best-effort yfinance metadata. Earnings dates, EPS fields, revenue fields, and announcement times may be absent, stale, or empty. If yfinance cannot return data, the app records a warning and continues to support manual CSV import. Earnings events are stored separately from active catalysts and do not alter scanner scoring.
 
 The news adapter is currently a placeholder interface. No paid news provider is required, and the app does not scrape aggressively.
 
@@ -461,6 +465,14 @@ Phase 2C-3B.2 hardens the build/write path for larger pilots:
 - Dataset Lab previews are bounded; full exports happen only through explicit build/backfill actions.
 - Backfill metadata records timing and peak-RSS measurements to help identify future bottlenecks.
 
+Phase 2C-4C adds the final dataset-build memory hardening:
+
+- Full-universe cached builds can run in cache-only mode for validation so missing OHLCV ranges are reported without provider downloads.
+- Per-ticker technical, SEC, and earnings features are precomputed with bounded/vectorized paths before snapshot rows are assembled.
+- Dataset-build caches are cleared between tickers so ticker-local frames do not stay retained for the whole build.
+- Zero-duration publish/revert audit rows are treated as inactive windows and do not trigger unnecessary historical catalyst reconstruction.
+- SEC EDGAR revision history is skipped in non-SEC catalyst reconstruction paths, preserving scanner/catalyst semantics while avoiding large audit-only allocations.
+
 Phase 2C-3A adds historical SEC filing ingestion for small corporate-equity pilots:
 
 - `Historical SEC Filing Backfill` in Dataset Lab fetches SEC metadata only for selected corporate tickers and date ranges.
@@ -471,6 +483,17 @@ Phase 2C-3A adds historical SEC filing ingestion for small corporate-equity pilo
 - Raw filing counts, generic eligible filing counts, Form 4 raw counts, unknown-classification counts, feature-excluded counts, needs-review workflow flags, and policy-version fields are retained as audit columns, not model features.
 - 424B activity is not treated as a single equity-financing signal. The dataset separates `sec_recent_equity_financing_flag`, `sec_recent_structured_note_flag`, and `sec_recent_registration_or_prospectus_other_flag`.
 - These SEC features are dataset features only. They do not directly alter the live scanner score.
+
+Phase 2C-4A adds the historical earnings-event foundation:
+
+- `Historical Earnings Event Backfill` in Dataset Lab fetches best-effort yfinance earnings metadata for selected tickers and date ranges.
+- Manual CSV import is available for earnings rows when yfinance coverage is missing or incomplete.
+- Earnings storage distinguishes `announced_at`, `available_at`, provider `fetched_at`, and local `created_at`/`updated_at`.
+- Point-in-time snapshots include an earnings event only when `available_at <= snapshot after-close timestamp`.
+- Before-market events may be available on that session; after-market events are available after the session close. Unknown timing uses a conservative provider-layer availability timestamp and warning.
+- Model-facing earnings fields include event-present windows, sessions since latest earnings, latest EPS surprise percent/direction, optional revenue surprise percent, timing-known, and data-available controls.
+- Provider metadata, raw values, warnings, missing-field counts, and event IDs are audit columns, not default model features.
+- Earnings events do not automatically create positive/negative catalysts and do not affect live scanner scoring.
 
 The page shows row count, feature/label column counts, ticker/date coverage, missingness, dataset preview, individual snapshot inspection, catalyst IDs available to a snapshot, label availability timestamps, per-ticker backfill progress, and a chronological split preview. Splits are deterministic training/validation/test periods with an optional session gap; random train/test splitting is intentionally not used for time-series research.
 
@@ -488,7 +511,7 @@ Current dataset limitations:
 - It uses the local OHLCV cache first and can fetch missing OHLCV ranges through the configured free provider when coverage is incomplete.
 - It is not a survivorship-bias-free institutional feature store.
 - Historical reconstruction of catalysts is conservative. New catalyst create/update/delete actions are recorded in `catalyst_revisions`, but old records do not have invented revision history. Historical periods affected by missing revision history are marked with a data-quality warning.
-- Catalyst history is backfilled only from local records. The app does not fabricate old news, filings, earnings events, or LLM-supported catalyst history.
+- Catalyst history is backfilled only from local records. The app does not fabricate old news, filings, missing earnings events, or LLM-supported catalyst history.
 - No text embeddings, model training, walk-forward optimization, Spark, or cloud infrastructure are included in Phase 2C-2.
 
 Planned progression:
@@ -551,7 +574,7 @@ For the top-score portfolio strategy, the UI labels win rate, average win/loss, 
 - News provider support is a placeholder unless you add/import events later.
 - Options scores are still placeholders.
 - SEC filing events marked `Needs Review` are not interpreted as bullish or bearish without manual review.
-- Earnings data from free providers may be unavailable or uncertain.
+- Earnings data from free providers may be unavailable, partial, revised, or uncertain; revenue fields are often missing and are not inferred.
 - yfinance data can be stale, revised, incomplete, rate-limited, or unavailable.
 - Backtests do not model taxes, borrow costs, liquidity impact, partial fills, delistings, survivorship bias, or realistic portfolio operations.
 - Portfolio backtest trade statistics are rebalance-period approximations, not order-level execution records.
@@ -564,7 +587,7 @@ For the top-score portfolio strategy, the UI labels win rate, average win/loss, 
 - No real news API in Phase 2A.
 - No real options chain, unusual options activity, IV rank, or open-interest analysis in v1.
 - SEC support includes metadata and optional raw/cleaned filing text fetches. No financial statement parser or automated scoring interpretation yet.
-- Earnings support is best-effort yfinance metadata plus manual entry.
+- Earnings support is best-effort yfinance metadata plus CSV import. It is dataset-only and does not create catalyst sentiment or scanner-score effects.
 - LLM extraction is review-only. Fallback extraction is deterministic; OpenAI extraction is optional and never affects scores automatically.
 - Review-only catalyst proposals are not published into active catalysts and never affect scores automatically.
 - Controlled publication can make a reviewed proposal an active catalyst, but only through the existing catalyst formula and explicit user confirmation.

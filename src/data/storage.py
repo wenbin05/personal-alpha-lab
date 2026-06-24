@@ -386,6 +386,71 @@ def init_db(db_path: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_sec_backfill_items_run_status
                 ON sec_backfill_items (sec_run_id, status);
 
+            CREATE TABLE IF NOT EXISTS earnings_events (
+                earnings_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                fiscal_period_end TEXT,
+                announced_at TEXT,
+                available_at TEXT NOT NULL,
+                timing TEXT NOT NULL DEFAULT 'unknown',
+                eps_estimate REAL,
+                eps_actual REAL,
+                eps_surprise REAL,
+                eps_surprise_percent REAL,
+                revenue_estimate REAL,
+                revenue_actual REAL,
+                revenue_surprise_percent REAL,
+                currency TEXT,
+                provider TEXT NOT NULL,
+                provider_event_id TEXT,
+                fetched_at TEXT NOT NULL,
+                raw_payload_json TEXT,
+                raw_payload_hash TEXT NOT NULL,
+                data_quality_status TEXT NOT NULL,
+                warnings TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_earnings_events_ticker_available
+                ON earnings_events (ticker, available_at);
+
+            CREATE INDEX IF NOT EXISTS idx_earnings_events_ticker_announced
+                ON earnings_events (ticker, announced_at);
+
+            CREATE INDEX IF NOT EXISTS idx_earnings_events_provider_event
+                ON earnings_events (provider, provider_event_id);
+
+            CREATE TABLE IF NOT EXISTS earnings_event_revisions (
+                revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                earnings_event_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_snapshot_json TEXT,
+                after_snapshot_json TEXT,
+                effective_timestamp TEXT NOT NULL,
+                recorded_timestamp TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_earnings_revisions_event
+                ON earnings_event_revisions (earnings_event_id, effective_timestamp);
+
+            CREATE TABLE IF NOT EXISTS earnings_response_cache (
+                cache_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                response_json TEXT,
+                status TEXT NOT NULL,
+                error TEXT,
+                fetched_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_earnings_response_cache_ticker
+                ON earnings_response_cache (provider, ticker);
+
             CREATE TABLE IF NOT EXISTS dataset_builds (
                 dataset_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 version TEXT NOT NULL,

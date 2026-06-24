@@ -107,6 +107,10 @@ from src.documents.repository import (
     unlink_document_from_catalyst,
 )
 from src.documents.text_cleaning import preview_text
+from src.earnings.backfill import backfill_earnings_events
+from src.earnings.csv_import import parse_earnings_import_frame
+from src.earnings.repository import bulk_insert_earnings_events, earnings_coverage_report, list_earnings_by_ticker
+from src.earnings.yfinance_provider import YFinanceHistoricalEarningsProvider
 from src.extractions.models import EXTRACTION_PROVIDERS, EXTRACTION_TYPES, REVIEW_STATUSES
 from src.extractions.openai_provider import openai_provider_status
 from src.extractions.prompting import prepare_document_text
@@ -1698,7 +1702,9 @@ def ticker_research_page(settings: Settings) -> None:
         key=f"research_price_{ticker}",
     )
 
-    tabs = st.tabs(["Feature Breakdown", "Summary", "Catalysts", "Documents", "LLM Proposals", "Risk Helper"])
+    earnings_history = list_earnings_by_ticker(settings.database_file, ticker, limit=50)
+
+    tabs = st.tabs(["Feature Breakdown", "Summary", "Catalysts", "Documents", "Earnings", "LLM Proposals", "Risk Helper"])
     with tabs[0]:
         st.json(
             {
@@ -1707,29 +1713,27 @@ def ticker_research_page(settings: Settings) -> None:
                 "score_breakdown": result["breakdown"],
                 "penalties": result["penalties"],
                 "catalyst_features": catalyst_features,
+                "historical_earnings_events_count": int(len(earnings_history)),
                 "source_documents_count": int(len(documents)),
                 "news_placeholder": news,
             }
         )
     with tabs[1]:
         st.write(summarize_ticker_features(ticker, features, result))
-        earnings_events = catalyst_events[catalyst_events["event_type"] == "earnings"] if not catalyst_events.empty else pd.DataFrame()
         sec_events = catalyst_events[catalyst_events["event_type"] == "sec_filing"] if not catalyst_events.empty else pd.DataFrame()
-        next_earnings = None
-        if not earnings_events.empty:
-            future_earnings = earnings_events[pd.to_datetime(earnings_events["event_date"]).dt.date >= datetime.now(UTC).date()]
-            if not future_earnings.empty:
-                next_earnings = future_earnings.sort_values("event_date").iloc[0]
         summary_bits = [
             f"{ticker} has {int(catalyst_features.get('catalyst_events_count', 0))} recent catalyst event(s).",
             f"Catalyst contribution: {result['breakdown'].get('catalyst', 0):.1f}/10.",
         ]
         if catalyst_features.get("catalyst_penalty", 0) < 0:
             summary_bits.append(f"Catalyst penalty: {catalyst_features['catalyst_penalty']:.1f}.")
-        if next_earnings is not None:
-            summary_bits.append(f"Next earnings date: {next_earnings['event_date']}.")
+        if not earnings_history.empty:
+            latest_earnings = earnings_history.sort_values("available_at", ascending=False).iloc[0]
+            summary_bits.append(
+                f"Stored historical earnings events: {len(earnings_history)}; latest available at {latest_earnings.get('available_at')}."
+            )
         else:
-            summary_bits.append("Earnings date unavailable from stored provider data.")
+            summary_bits.append("No historical earnings events stored for this ticker yet.")
         if not sec_events.empty:
             summary_bits.append(f"Recent SEC filings stored: {len(sec_events)}; review flagged filing metadata manually.")
         else:
@@ -1782,6 +1786,30 @@ def ticker_research_page(settings: Settings) -> None:
     with tabs[3]:
         _show_documents(documents, f"{ticker} Source Documents", settings=settings, allow_link_controls=True)
     with tabs[4]:
+        st.warning("Historical earnings events are informational and dataset-facing only; they do not affect scanner scoring.")
+        if earnings_history.empty:
+            st.info("No historical earnings events stored for this ticker.")
+        else:
+            display_cols = [
+                "available_at",
+                "announced_at",
+                "fiscal_period_end",
+                "timing",
+                "eps_estimate",
+                "eps_actual",
+                "eps_surprise_percent",
+                "revenue_estimate",
+                "revenue_actual",
+                "provider",
+                "data_quality_status",
+                "warnings",
+            ]
+            st.dataframe(
+                earnings_history[[col for col in display_cols if col in earnings_history.columns]],
+                width="stretch",
+                hide_index=True,
+            )
+    with tabs[5]:
         st.warning("Approved extractions and catalyst proposals shown here do not affect scanner scoring.")
         st.metric("LLM proposal score contribution", proposal_score_contribution())
         if approved_extractions.empty:
@@ -1808,7 +1836,7 @@ def ticker_research_page(settings: Settings) -> None:
         else:
             st.subheader("Publication / Reversal Audit")
             st.dataframe(publication_display_frame(publications), width="stretch", hide_index=True)
-    with tabs[5]:
+    with tabs[6]:
         stops = stop_candidates(features)
         portfolio_size = st.number_input("Portfolio size", min_value=1_000.0, value=float(settings.risk.default_portfolio_size), step=5_000.0)
         risk_pct = st.number_input("Risk per trade %", min_value=0.1, max_value=5.0, value=float(settings.risk.default_risk_per_trade_pct), step=0.1)
@@ -1852,6 +1880,11 @@ def dataset_lab_page(settings: Settings) -> None:
     ]
     if len(default_sec_tickers) < 5:
         default_sec_tickers = corporate_universe["ticker"].head(5).tolist()
+    default_earnings_tickers = [
+        ticker for ticker in ["AAPL", "JPM", "AMZN", "NVDA", "TSLA"] if ticker in corporate_universe["ticker"].tolist()
+    ]
+    if len(default_earnings_tickers) < 5:
+        default_earnings_tickers = corporate_universe["ticker"].head(5).tolist()
 
     coverage = _cached_coverage(settings.database_file, sorted(set(all_tickers + ["SPY", "QQQ", "IWM", "^VIX"])))
     valid_coverage = coverage.dropna(subset=["start", "end"])
@@ -2110,6 +2143,61 @@ def dataset_lab_page(settings: Settings) -> None:
         if not exclusions.empty:
             st.write("Exclusion reasons")
             st.dataframe(exclusions, width="stretch", hide_index=True)
+
+    with st.expander("Historical Earnings Event Backfill", expanded=False):
+        st.caption(
+            "Best-effort historical earnings events are stored separately from catalysts. They feed point-in-time datasets only and do not change scanner scoring."
+        )
+        earnings_tickers = st.multiselect(
+            "Earnings tickers",
+            corporate_universe["ticker"].tolist(),
+            default=default_earnings_tickers,
+            key="earnings_backfill_tickers",
+        )
+        e1, e2, e3 = st.columns(3)
+        earnings_start = e1.date_input("Earnings start date", value=start_date, key="earnings_start")
+        earnings_end = e2.date_input("Earnings end date", value=end_date, key="earnings_end")
+        use_earnings_cache = e3.checkbox("Use earnings provider cache", value=True, key="earnings_use_cache")
+        if st.button("Backfill Earnings Events"):
+            provider = YFinanceHistoricalEarningsProvider(db_path=settings.database_file)
+            with st.spinner("Fetching historical earnings metadata with yfinance best-effort coverage..."):
+                result = backfill_earnings_events(
+                    settings.database_file,
+                    earnings_tickers,
+                    earnings_start,
+                    earnings_end,
+                    provider=provider,
+                    use_cache=use_earnings_cache,
+                )
+            st.success(
+                f"Earnings backfill complete. Inserted {result.inserted}, updated {result.updated}, duplicates {result.duplicates}, failed tickers {result.failed_tickers}."
+            )
+            if result.per_ticker:
+                st.dataframe(pd.DataFrame(result.per_ticker), width="stretch", hide_index=True)
+            for warning in result.warnings[:10]:
+                st.warning(warning)
+        st.write("Earnings coverage")
+        earnings_summary = earnings_coverage_report(settings.database_file, earnings_tickers, earnings_start, earnings_end)
+        if earnings_summary.empty:
+            st.info("No stored earnings events for selected tickers yet.")
+        else:
+            st.dataframe(earnings_summary, width="stretch", hide_index=True)
+        upload = st.file_uploader(
+            "Import earnings CSV",
+            type=["csv"],
+            key="earnings_csv_import",
+            help="Supported columns include ticker, fiscal_period_end, announced_at, available_at, timing, EPS and revenue fields.",
+        )
+        if upload is not None and st.button("Import Earnings CSV"):
+            imported = parse_earnings_import_frame(pd.read_csv(upload))
+            counts = bulk_insert_earnings_events(settings.database_file, imported.events)
+            st.success(
+                f"Imported {len(imported.events)} row(s): inserted {counts.get('inserted', 0)}, updated {counts.get('updated', 0)}, duplicates {counts.get('duplicate', 0)}."
+            )
+            for error in imported.errors[:10]:
+                st.error(error)
+            for warning in imported.warnings[:10]:
+                st.warning(warning)
 
     st.subheader("Recent Dataset Builds")
     builds = list_dataset_builds(settings.database_file, limit=20)

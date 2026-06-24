@@ -271,13 +271,15 @@ def insert_feature_snapshots(
             """,
             rows,
         )
+        key_tickers = sorted({ticker for ticker, _trading_date in keys})
+        placeholders = ",".join(["?"] * len(key_tickers))
         fetched = conn.execute(
-            """
+            f"""
             SELECT snapshot_id, ticker, trading_date
             FROM feature_snapshots
-            WHERE dataset_id = ?
+            WHERE dataset_id = ? AND ticker IN ({placeholders})
             """,
-            (int(dataset_id),),
+            (int(dataset_id), *key_tickers),
         ).fetchall()
     output: dict[tuple[str, date], int] = {}
     for row in fetched:

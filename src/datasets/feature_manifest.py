@@ -31,6 +31,14 @@ SEC_AUDIT_COLUMNS = {
 AUDIT_COLUMNS = {
     "available_catalyst_ids",
     "catalyst_warnings",
+    "earnings_available_event_ids",
+    "earnings_event_count_20s",
+    "earnings_latest_data_quality_status",
+    "earnings_latest_provider",
+    "earnings_latest_warnings",
+    "earnings_missing_eps_actual_count_20s",
+    "earnings_missing_eps_estimate_count_20s",
+    "earnings_missing_revenue_count_20s",
     "regime_warnings",
 }
 
