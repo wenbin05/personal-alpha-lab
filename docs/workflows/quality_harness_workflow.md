@@ -1,0 +1,28 @@
+# Quality Harness Workflow
+
+Use this workflow before and after annotation/model phases. The harness is read-only unless you explicitly pass an output path for JSON or Markdown artifacts.
+
+## Commands
+
+Run commands from the repository root.
+
+```bash
+python scripts/quality_harness.py scanner-snapshot --output data/processed/scanner_before.json
+python scripts/quality_harness.py scanner-compare --before data/processed/scanner_before.json --after data/processed/scanner_after.json --fail-on-change
+python scripts/quality_harness.py dataset-check --dataset-id 49
+python scripts/quality_harness.py model-compare --model-run-id 247 --baseline-run-id 145
+python scripts/quality_harness.py annotation-coverage --dataset-id 49
+python scripts/quality_harness.py health-check
+python scripts/quality_harness.py annotation-template-path
+```
+
+## Guardrails
+
+- Scanner snapshot reads stored `scan_results`; it does not refresh market data.
+- Scanner comparison reports score, label, risk, and catalyst-score changes.
+- Dataset checks confirm labels, audit columns, identifiers, and metadata are excluded from model features.
+- Model comparison uses persisted final-test metrics only.
+- Annotation coverage uses point-in-time Dataset 49 rows and detects zero-coverage features and coarse future-availability violations.
+- The annotation template at `docs/templates/research_annotations_template.csv` contains synthetic demo rows only. Do not import it into production data unless explicitly requested.
+- The Streamlit health check verifies `http://localhost:8501/_stcore/health` and does not stop or restart the server.
+

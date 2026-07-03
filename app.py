@@ -12,6 +12,7 @@ from src.ui.pages import (
     dataset_lab_page,
     llm_review_page,
     market_regime_page,
+    model_lab_page,
     scanner_page,
     ticker_research_page,
     trade_journal_page,
@@ -51,6 +52,7 @@ def main() -> None:
             "Documents / Text",
             "LLM Review",
             "Dataset Lab",
+            "Model Lab",
             "Backtesting",
             "Validation / Debug",
             "Trade Journal",
@@ -72,6 +74,8 @@ def main() -> None:
         llm_review_page(settings)
     elif page == "Dataset Lab":
         dataset_lab_page(settings)
+    elif page == "Model Lab":
+        model_lab_page(settings)
     elif page == "Backtesting":
         backtesting_page(settings)
     elif page == "Validation / Debug":

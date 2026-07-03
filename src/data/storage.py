@@ -451,6 +451,77 @@ def init_db(db_path: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_earnings_response_cache_ticker
                 ON earnings_response_cache (provider, ticker);
 
+            CREATE TABLE IF NOT EXISTS research_event_annotations (
+                annotation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                available_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                sentiment_label TEXT NOT NULL DEFAULT 'unknown',
+                strength INTEGER NOT NULL DEFAULT 0,
+                confidence REAL NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'manual',
+                source_url TEXT,
+                title TEXT,
+                summary TEXT,
+                evidence_text TEXT,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                research_only INTEGER NOT NULL DEFAULT 1,
+                scanner_scoring_effect INTEGER NOT NULL DEFAULT 0,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_research_event_annotations_ticker_available
+                ON research_event_annotations (ticker, available_at);
+
+            CREATE INDEX IF NOT EXISTS idx_research_event_annotations_ticker_event
+                ON research_event_annotations (ticker, event_date);
+
+            CREATE INDEX IF NOT EXISTS idx_research_event_annotations_type
+                ON research_event_annotations (event_type, sentiment_label);
+
+            CREATE TABLE IF NOT EXISTS research_event_candidates (
+                candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                available_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT,
+                source TEXT NOT NULL,
+                source_url TEXT,
+                evidence_text TEXT,
+                sentiment_label TEXT NOT NULL DEFAULT 'unknown',
+                strength INTEGER NOT NULL DEFAULT 0,
+                confidence REAL NOT NULL DEFAULT 0,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                provider TEXT NOT NULL DEFAULT 'csv_manual',
+                provider_metadata_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'staged',
+                duplicate_of_annotation_id INTEGER,
+                duplicate_of_candidate_id INTEGER,
+                duplicate_reason TEXT,
+                rejection_reason TEXT,
+                normalized_title TEXT NOT NULL,
+                evidence_text_hash TEXT,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                imported_annotation_id INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_research_event_candidates_status
+                ON research_event_candidates (status, ticker, available_at);
+
+            CREATE INDEX IF NOT EXISTS idx_research_event_candidates_ticker_event
+                ON research_event_candidates (ticker, event_date);
+
+            CREATE INDEX IF NOT EXISTS idx_research_event_candidates_source_url
+                ON research_event_candidates (source_url);
+
             CREATE TABLE IF NOT EXISTS dataset_builds (
                 dataset_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 version TEXT NOT NULL,
@@ -571,6 +642,85 @@ def init_db(db_path: str | Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_backfill_items_run_status
                 ON backfill_items (run_id, status);
+
+            CREATE TABLE IF NOT EXISTS model_runs (
+                model_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id INTEGER NOT NULL,
+                dataset_hash TEXT,
+                target_column TEXT NOT NULL,
+                target_horizon TEXT NOT NULL,
+                task TEXT NOT NULL,
+                feature_set_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                split_config_json TEXT NOT NULL,
+                feature_columns_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_model_runs_dataset
+                ON model_runs (dataset_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_model_runs_model
+                ON model_runs (target_horizon, feature_set_name, model_name, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS model_fold_metrics (
+                metric_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_run_id INTEGER NOT NULL,
+                fold_name TEXT NOT NULL,
+                split_name TEXT NOT NULL,
+                train_start_date TEXT,
+                train_end_date TEXT,
+                eval_start_date TEXT,
+                eval_end_date TEXT,
+                train_rows INTEGER NOT NULL,
+                eval_rows INTEGER NOT NULL,
+                metrics_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_model_fold_metrics_run
+                ON model_fold_metrics (model_run_id, fold_name);
+
+            CREATE TABLE IF NOT EXISTS model_final_metrics (
+                final_metric_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_run_id INTEGER NOT NULL,
+                split_name TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_model_final_metrics_run
+                ON model_final_metrics (model_run_id);
+
+            CREATE TABLE IF NOT EXISTS model_predictions (
+                prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_run_id INTEGER NOT NULL,
+                snapshot_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                target_horizon TEXT NOT NULL,
+                split_name TEXT NOT NULL,
+                fold_name TEXT NOT NULL,
+                y_true REAL,
+                y_pred REAL,
+                y_pred_label INTEGER,
+                y_score REAL,
+                feature_set_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_model_predictions_run
+                ON model_predictions (model_run_id, split_name, fold_name);
+
+            CREATE INDEX IF NOT EXISTS idx_model_predictions_snapshot
+                ON model_predictions (snapshot_id);
             """
         )
         _ensure_column(conn, "llm_extractions", "document_relevance", "TEXT NOT NULL DEFAULT 'unknown'")

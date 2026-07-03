@@ -18,6 +18,7 @@ This project is for personal research and paper trading only. It is not financia
 - LLM Review page for fallback and optional OpenAI extraction, with manual approve/reject/supersede workflow.
 - Review-only catalyst proposals and extraction-to-catalyst audit links that remain separate from active catalyst scoring.
 - Dataset Lab for point-in-time feature snapshots, future outcome labels, leakage checks, and versioned CSV exports.
+- Model Lab for no-skill, Ridge, and logistic-regression baselines over point-in-time datasets. Results are research-only and do not alter scanner scoring.
 - Ticker research page with price/volume charts, moving averages, feature breakdowns, and rule-based summaries.
 - Simple backtests for momentum breakout, mean reversion, moving average trend, and top-score weekly rebalance.
 - SQLite-backed paper trade journal.
@@ -512,7 +513,7 @@ Current dataset limitations:
 - It is not a survivorship-bias-free institutional feature store.
 - Historical reconstruction of catalysts is conservative. New catalyst create/update/delete actions are recorded in `catalyst_revisions`, but old records do not have invented revision history. Historical periods affected by missing revision history are marked with a data-quality warning.
 - Catalyst history is backfilled only from local records. The app does not fabricate old news, filings, missing earnings events, or LLM-supported catalyst history.
-- No text embeddings, model training, walk-forward optimization, Spark, or cloud infrastructure are included in Phase 2C-2.
+- No text embeddings, deep learning, hyperparameter search, Spark, cloud infrastructure, or model-driven scanner scoring are included in Phase 2D-1.
 
 Planned progression:
 
@@ -523,6 +524,108 @@ Point-in-time dataset
 → walk-forward comparison
 → Deep Learning only if it beats baselines out of sample
 ```
+
+## Model Lab
+
+`Model Lab` is the Phase 2D transparent baseline-modeling surface. It loads only dataset-approved `model_feature` columns through the safe training loader, keeps labels/audit/metadata separate, and uses chronological expanding-window folds with a purge/embargo gap based on the target horizon.
+
+Included baselines and models:
+
+- zero prediction
+- train-set historical mean
+- Ridge regression
+- logistic regression for positive/negative excess return
+
+Feature-set ablations:
+
+- technical only
+- technical + SEC
+- technical + earnings
+- all model features
+- technical core
+- technical pruned
+- event features only
+- technical core + events
+- low-missing / low-correlation
+
+Model outputs are research-only. They do not modify catalysts, alerts, scanner scores, or paper-trading workflows, and they are not buy/sell/hold recommendations.
+
+The `Baseline Diagnostics` expander analyzes completed model runs without training new models. It persists JSON artifacts under `data/processed/` and reports fold-by-fold metrics, target distributions, per-ticker errors, feature missingness/constant/correlation issues, SEC and earnings coverage, regime splits, and feature-set ablation deltas. These artifacts are intended to explain signal quality before adding more complex models; they remain read-only with respect to datasets, catalysts, scanner scoring, and alerts.
+
+Phase 2D target engineering keeps Dataset 49 immutable and derives cleaner research targets inside the modeling layer:
+
+- train-fold winsorized 5-session SPY excess return
+- volatility-normalized excess return using point-in-time `volatility_20d`
+- same-date cross-sectional rank percentile
+- same-date top/bottom quintile classification with the middle bucket ignored
+
+Winsorization thresholds are fit on each training fold only and then applied to that fold's validation/test rows. Volatility normalization uses only the trailing realized-volatility feature already available at the snapshot timestamp. Cross-sectional labels are computed within a single snapshot date and never across future dates. These derived labels are persisted in model-run metadata and prediction rows, not added as model features or scanner inputs.
+
+Phase 2D feature-quality pruning audits Dataset 49 before adding model complexity. The `Feature Quality / Pruning` expander in Model Lab persists JSON artifacts under `data/processed/` with:
+
+- missingness by feature, ticker, date, and split
+- zero-variance and near-zero-variance features
+- sparse binary/event features with too few active observations
+- highly correlated feature clusters and deterministic representative columns
+- outlier/scale diagnostics using development-period statistics
+- fold-safe univariate IC by feature, using validation folds only
+- named pruned feature-set definitions
+
+Pruned feature sets are selected from development folds only; final-test labels are not used for feature selection. The default training loader still loads only manifest-approved `model_feature` columns, and each pruned run stores its exact column list in model-run metadata. SEC and earnings event features remain research inputs only: they do not change scanner scores or create recommendations.
+
+The Phase 2D-4 event-only feature sets intentionally exclude generic SEC eligible-event proxy columns such as `sec_feature_eligible_event_days_*`. They keep category-specific SEC event-day, presence, and days-since fields separate from structured-note, ownership, periodic, and current-event activity.
+
+Phase 2D event-feature redesign derives additional research-only features from existing point-in-time SEC and earnings columns without calling external providers:
+
+- SEC category recency, deterministic decay, and bucket features
+- earnings post-event windows, EPS surprise buckets, clipped surprise magnitude, timing-known flags, and missingness flags
+- event coverage and timing artifacts for SEC, earnings, catalyst, and LLM-supported catalyst groups
+
+The `Event Feature Coverage / Timing` expander in Model Lab can generate/read Phase 2D-5 artifacts under `data/processed/`. These artifacts audit active observation counts, coverage by ticker/date, fold density, event lag buckets, missing `available_at`, and pre-availability feature violations. Catalyst/LLM-supported event features remain out of redesigned model-facing sets when historical coverage is inactive or near zero.
+
+Phase 2D-5 did not promote event metadata into scanner scoring. In the Dataset 49 linear baselines, the best event-enhanced Ridge run still underperformed the Phase 2D-4 `technical_core` + winsorized 5-session baseline on RMSE, OOS R², and Spearman IC. Event metadata is therefore retained for audit/research, but it is not yet considered useful as model-facing input for the current linear baseline.
+
+Phase 2D-6A adds a research-only historical annotation layer for manually backfilled catalyst/event context. These rows live in `research_event_annotations`, not the active `catalysts` table. They always store `research_only = true` and `scanner_scoring_effect = 0`.
+
+Use the `Research Event Annotations` expander in Model Lab to:
+
+- add one manual annotation
+- import a CSV with historical annotations
+- generate annotation coverage artifacts
+- run simple annotation feature baselines
+- inspect stored research-only rows
+
+Supported CSV columns are `ticker`, `event_date`, `available_at`, `event_type`, `sentiment_label`, `strength`, `confidence`, `source`, `source_url`, `title`, `summary`, `evidence_text`, and `tags`. CSV validation rejects missing tickers, invalid dates, unsupported event types, invalid sentiment labels, invalid strength/confidence values, and duplicate event keys.
+
+Annotation features are derived point-in-time for model research only:
+
+- recent positive/negative annotation counts over 20 sessions
+- days since latest positive/negative annotation
+- max recent annotation strength
+- weighted recent annotation sentiment
+- annotation coverage availability
+
+An annotation can activate only when `available_at <= snapshot as_of_timestamp` and `event_date <= snapshot_date`. This prevents future event labels from leaking into earlier model features. Annotation features do not create catalysts, do not update alerts, do not affect scanner scores, and are not buy/sell/hold recommendations.
+
+## Quality Harness
+
+Phase 2D-6B-0 adds reusable quality-harness checks for annotation and model phases. The harness lives in `src/quality/harness.py` with a CLI wrapper at `scripts/quality_harness.py`.
+
+Common commands:
+
+```bash
+python scripts/quality_harness.py scanner-snapshot --output data/processed/scanner_before.json
+python scripts/quality_harness.py scanner-compare --before data/processed/scanner_before.json --after data/processed/scanner_after.json --fail-on-change
+python scripts/quality_harness.py dataset-check --dataset-id 49
+python scripts/quality_harness.py model-compare --model-run-id 247 --baseline-run-id 145
+python scripts/quality_harness.py annotation-coverage --dataset-id 49
+python scripts/quality_harness.py health-check
+python scripts/quality_harness.py annotation-template-path
+```
+
+The tracked synthetic annotation template is `docs/templates/research_annotations_template.csv`. It is for format guidance only and should not be imported into production data unless a phase explicitly requests demo rows.
+
+Detailed workflow notes are in `docs/workflows/quality_harness_workflow.md`.
 
 ## Validation / Debug Page
 

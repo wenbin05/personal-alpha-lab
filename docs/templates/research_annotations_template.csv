@@ -1,0 +1,6 @@
+ticker,event_date,available_at,event_type,sentiment_label,strength,confidence,source,source_url,title,summary,evidence_text,tags
+DEMOA,2025-02-05,2025-02-05T21:15:00Z,earnings,positive,7,0.80,demo,,Synthetic positive earnings catalyst,"Demo only: record revenue, earnings beat, and raised guidance after the close.","Synthetic excerpt: record revenue and raised guidance.",demo;synthetic;earnings
+DEMOB,2025-03-12,2025-03-12T13:30:00Z,financing,negative,8,0.75,demo,,Synthetic dilution financing risk,"Demo only: public share offering may dilute existing holders; proceeds earmarked for general corporate purposes.","Synthetic excerpt: public offering of common stock for general corporate purposes.",demo;synthetic;financing
+DEMOC,2025-04-15,2025-04-15T22:00:00Z,sec_filing,neutral,1,0.60,demo,,Synthetic routine SEC filing,"Demo only: routine quarterly filing with no interpreted sentiment.","Synthetic excerpt: quarterly report filed in the ordinary course.",demo;synthetic;sec
+DEMOD,2025-05-20,2025-05-20T14:00:00Z,news,positive,5,0.65,demo,,Synthetic product/customer traction news,"Demo only: customer traction or product milestone noted by a source; verify manually before use.","Synthetic excerpt: new customer deployments expanded during the quarter.",demo;synthetic;traction
+

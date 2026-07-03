@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from src.annotations.csv_import import parse_annotation_import_frame
+from src.annotations.models import ANNOTATION_EVENT_TYPES, ANNOTATION_SENTIMENT_LABELS, ResearchEventAnnotation
+from src.annotations.news_csv_provider import parse_candidate_import_frame
+from src.annotations.news_repository import (
+    accept_candidate,
+    build_candidate_ingestion_artifact,
+    candidate_counts_by_status,
+    import_accepted_candidates,
+    list_candidates,
+    reject_candidate,
+    stage_candidates,
+)
+from src.annotations.repository import annotation_counts_by_ticker, bulk_insert_annotations, insert_annotation, list_annotations
 from src.alerts.alert_formatter import format_alert, suggested_watch_action
 from src.backtest.simple_backtester import (
     backtest_mean_reversion_strategy,
@@ -134,6 +147,43 @@ from src.extractions.review_workflow import (
     pending_extractions_for_document,
 )
 from src.features.regime import classify_market_regime
+from src.modeling.feature_sets import FEATURE_SET_NAMES, feature_set_definitions
+from src.modeling.feature_quality import (
+    build_feature_quality_audit,
+    feature_set_quality_rows,
+    list_feature_quality_artifacts,
+    load_feature_quality_artifact,
+    write_feature_quality_artifact,
+)
+from src.modeling.event_feature_redesign import (
+    build_event_coverage_audit,
+    build_event_timing_audit,
+    event_feature_set_rows,
+    list_event_redesign_artifacts,
+    load_event_artifact,
+    write_event_artifact,
+)
+from src.modeling.annotation_features import (
+    build_annotation_coverage_audit,
+    list_annotation_artifacts,
+    load_annotation_artifact,
+    run_annotation_baseline_suite,
+    write_annotation_artifact,
+)
+from src.modeling.diagnostics import (
+    build_model_diagnostics,
+    list_diagnostic_artifacts,
+    load_diagnostics_artifact,
+    write_diagnostics_artifact,
+)
+from src.modeling.repository import (
+    list_model_final_metrics,
+    list_model_fold_metrics,
+    list_model_predictions,
+    list_model_runs,
+)
+from src.modeling.runner import latest_accepted_dataset_id, run_single_baseline_model
+from src.modeling.targets import RAW_TARGET_5_SESSION, get_target_definition, target_options, target_metadata
 from src.research.llm_placeholder import summarize_ticker_features
 from src.research.news_placeholder import get_news_placeholder
 from src.scoring.risk_rules import calculate_position_size, stop_candidates
@@ -163,6 +213,24 @@ def fmt_money(value: Any) -> str:
     if abs(value) >= 1_000_000:
         return f"${value / 1_000_000:.1f}M"
     return f"${value:,.0f}"
+
+
+def dataframe_for_streamlit(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a display-only copy with nested object cells stringified."""
+    if frame is None or frame.empty:
+        return pd.DataFrame() if frame is None else frame
+    display = frame.copy()
+    for column in display.columns:
+        dtype_name = str(display[column].dtype)
+        if dtype_name not in {"object", "str", "string"} and not dtype_name.startswith("string"):
+            continue
+        if display[column].map(lambda value: isinstance(value, (list, dict, tuple, set))).any():
+            display[column] = display[column].map(
+                lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+                if isinstance(value, (list, dict, tuple, set))
+                else value
+            )
+    return display
 
 
 def _manual_catalyst_event(
@@ -2322,7 +2390,7 @@ def dataset_lab_page(settings: Settings) -> None:
 
     st.subheader("Dataset Preview")
     st.caption("Preview is bounded to the first 500 flattened rows; exports are generated only by explicit build/backfill actions.")
-    st.dataframe(frame.head(200), width="stretch", hide_index=True)
+    st.dataframe(dataframe_for_streamlit(frame.head(200)), width="stretch", hide_index=True)
 
     st.subheader("Inspect Individual Snapshot")
     options = [
@@ -2365,6 +2433,808 @@ def dataset_lab_page(settings: Settings) -> None:
 
     st.subheader("Cached OHLCV Coverage")
     st.dataframe(coverage, width="stretch", hide_index=True)
+
+
+def _metrics_records(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for _, row in frame.iterrows():
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        if not metrics and row.get("metrics_json"):
+            try:
+                metrics = json.loads(str(row.get("metrics_json")))
+            except Exception:
+                metrics = {}
+        base = {
+            key: row.get(key)
+            for key in [
+                "fold_name",
+                "split_name",
+                "train_start_date",
+                "train_end_date",
+                "eval_start_date",
+                "eval_end_date",
+                "train_rows",
+                "eval_rows",
+            ]
+            if key in frame.columns
+        }
+        base.update(metrics)
+        rows.append(base)
+    return pd.DataFrame(rows)
+
+
+def model_lab_page(settings: Settings) -> None:
+    st.header("Model Lab")
+    st.warning(
+        "Research-only baseline modeling. These runs do not change scanner scoring, catalysts, alerts, or recommendations."
+    )
+    st.caption(
+        "Uses dataset-approved model features only. Labels, audit columns, identifiers, timestamps, hashes, raw JSON, and workflow statuses are excluded from model inputs."
+    )
+
+    builds = list_dataset_builds(settings.database_file, limit=100)
+    completed = (
+        builds[(builds["row_count"].fillna(0).astype(int) > 0) & (builds["data_hash"].astype(str) != "pending")]
+        if not builds.empty
+        else pd.DataFrame()
+    )
+    if completed.empty:
+        st.info("No completed dataset builds are available yet.")
+        return
+
+    try:
+        default_dataset = latest_accepted_dataset_id(settings.database_file)
+    except Exception:
+        default_dataset = int(completed.sort_values("dataset_id", ascending=False).iloc[0]["dataset_id"])
+    dataset_ids = completed["dataset_id"].astype(int).tolist()
+    default_index = dataset_ids.index(default_dataset) if default_dataset in dataset_ids else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    dataset_id = int(c1.selectbox("Dataset", dataset_ids, index=default_index))
+    target_names = target_options()
+    target_name = c2.selectbox(
+        "Target",
+        target_names,
+        index=0,
+        format_func=lambda name: get_target_definition(name).display_name,
+    )
+    target_definition = get_target_definition(target_name)
+    feature_set_name = c3.selectbox("Feature set", FEATURE_SET_NAMES)
+    model_name = c4.selectbox("Model", list(target_definition.allowed_models), index=min(2, len(target_definition.allowed_models) - 1))
+
+    selected_build = completed[completed["dataset_id"].astype(int).eq(dataset_id)].iloc[0]
+    st.caption(
+        f"Dataset {dataset_id}: {int(selected_build['row_count'])} rows, hash {str(selected_build['data_hash'])[:12]}..., "
+        f"version {selected_build['version']}"
+    )
+    st.json(
+        {
+            "selected_target": target_metadata(target_definition),
+            "target_research_only": True,
+            "scanner_scoring_effect": 0,
+        },
+        expanded=False,
+    )
+
+    feature_columns = json.loads(selected_build.get("feature_columns_json") or "[]")
+    feature_defs = feature_set_definitions(feature_columns)
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"feature_set": item.name, "columns": len(item.columns), "description": item.description}
+                for item in feature_defs
+            ]
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+
+    with st.expander("Baseline Diagnostics", expanded=False):
+        st.caption(
+            "Read-only signal-quality diagnostics for completed baseline runs. Diagnostics do not alter datasets, scanner scoring, catalysts, or model runs."
+        )
+        diagnostics_dir = settings.database_file.parent / "processed"
+        artifacts = list_diagnostic_artifacts(diagnostics_dir)
+        artifact_options = {
+            f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in artifacts
+        }
+        generate_confirm = st.checkbox(
+            "I understand diagnostics are read-only and do not affect scanner scoring.",
+            key="model_lab_diagnostics_confirm",
+        )
+        if st.button("Generate Diagnostics Artifact", disabled=not generate_confirm):
+            with st.spinner("Analyzing completed model runs and Dataset Lab features..."):
+                diagnostics = build_model_diagnostics(settings.database_file, dataset_id)
+                artifact_path = write_diagnostics_artifact(diagnostics, diagnostics_dir)
+            st.success(f"Saved diagnostics artifact: {artifact_path.name}")
+            artifacts = list_diagnostic_artifacts(diagnostics_dir)
+            artifact_options = {
+                f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in artifacts
+            }
+
+        if not artifact_options:
+            st.info("No diagnostics artifacts found yet.")
+        else:
+            selected_artifact = st.selectbox("Diagnostics artifact", list(artifact_options.keys()))
+            diagnostics = load_diagnostics_artifact(artifact_options[selected_artifact])
+            summary = diagnostics.get("summary", {})
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Dataset", diagnostics.get("dataset_id", "n/a"))
+            c2.metric("Rows", int(diagnostics.get("dataset_rows", 0) or 0))
+            c3.metric("Runs Used", len(diagnostics.get("model_runs_used", [])))
+            c4.metric("Failure Modes", len(summary.get("likely_failure_modes", [])))
+            st.write("Likely failure modes:", ", ".join(summary.get("likely_failure_modes", [])) or "n/a")
+            diag_tabs = st.tabs(["Targets", "Folds", "Ablations", "Features", "Ticker Errors"])
+            with diag_tabs[0]:
+                st.dataframe(dataframe_for_streamlit(pd.DataFrame(diagnostics.get("target_distribution", []))), width="stretch", hide_index=True)
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(diagnostics.get("split_distribution_5_session", []))),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with diag_tabs[1]:
+                fold_cols = [
+                    "target_horizon",
+                    "feature_set_name",
+                    "model_name",
+                    "fold_name",
+                    "split_name",
+                    "eval_start_date",
+                    "eval_end_date",
+                    "metric_rmse",
+                    "metric_oos_r2_vs_train_mean",
+                    "metric_spearman_ic",
+                    "metric_directional_accuracy",
+                    "metric_roc_auc",
+                ]
+                fold_frame = pd.DataFrame(diagnostics.get("fold_metrics", []))
+                st.dataframe(
+                    dataframe_for_streamlit(fold_frame[[col for col in fold_cols if col in fold_frame.columns]]),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with diag_tabs[2]:
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(diagnostics.get("ablation_diagnostics", []))),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with diag_tabs[3]:
+                feature_diag = diagnostics.get("feature_diagnostics", {})
+                st.dataframe(dataframe_for_streamlit(pd.DataFrame(feature_diag.get("group_missingness", []))), width="stretch", hide_index=True)
+                st.dataframe(dataframe_for_streamlit(pd.DataFrame(feature_diag.get("near_constant_features", []))), width="stretch", hide_index=True)
+                st.dataframe(dataframe_for_streamlit(pd.DataFrame(feature_diag.get("highly_correlated_pairs", []))), width="stretch", hide_index=True)
+            with diag_tabs[4]:
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(diagnostics.get("per_ticker_prediction_error_5_session_technical_ridge", []))),
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.dataframe(dataframe_for_streamlit(pd.DataFrame(diagnostics.get("coverage_by_ticker", []))), width="stretch", hide_index=True)
+
+    with st.expander("Feature Quality / Pruning", expanded=False):
+        st.caption(
+            "Phase 2D-4 feature-quality artifacts audit missingness, constants, sparse event features, "
+            "correlations, outliers, and fold-safe univariate IC. Generated pruned feature sets are research-only "
+            "and do not affect scanner scoring."
+        )
+        quality_dir = settings.database_file.parent / "processed"
+        quality_artifacts = list_feature_quality_artifacts(quality_dir)
+        quality_options = {
+            f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in quality_artifacts
+        }
+        quality_confirm = st.checkbox(
+            "I understand feature-quality analysis is read-only and does not inspect final-test labels for selection.",
+            key="model_lab_feature_quality_confirm",
+        )
+        if st.button("Generate Feature Quality Artifact", disabled=not quality_confirm):
+            with st.spinner("Auditing feature quality and generating pruned feature-set definitions..."):
+                artifact = build_feature_quality_audit(settings.database_file, dataset_id)
+                artifact_path = write_feature_quality_artifact(artifact, quality_dir)
+            st.success(f"Saved feature-quality artifact: {artifact_path.name}")
+            quality_artifacts = list_feature_quality_artifacts(quality_dir)
+            quality_options = {
+                f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in quality_artifacts
+            }
+
+        if not quality_options:
+            st.info("No Phase 2D-4 feature-quality artifacts found yet.")
+        else:
+            selected_quality = st.selectbox("Feature-quality artifact", list(quality_options.keys()))
+            quality = load_feature_quality_artifact(quality_options[selected_quality])
+            summary = quality.get("summary", {})
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("Features", int(summary.get("feature_count", 0) or 0))
+            q2.metric("Near Constant", int(summary.get("near_constant_count", 0) or 0))
+            q3.metric("Sparse Events", int(summary.get("sparse_event_feature_count", 0) or 0))
+            q4.metric("Corr Pairs", int(summary.get("high_correlation_pair_count", 0) or 0))
+            st.write(summary.get("selection_guardrail", "Final-test labels are not used for feature selection."))
+            quality_tabs = st.tabs(["Feature Sets", "Groups", "Missingness", "Correlations", "Univariate IC"])
+            with quality_tabs[0]:
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(feature_set_quality_rows(quality))),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with quality_tabs[1]:
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(quality.get("feature_group_summary", []))),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with quality_tabs[2]:
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(quality.get("feature_missingness", [])).head(200)),
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(quality.get("sparse_event_features", [])).head(100)),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with quality_tabs[3]:
+                corr = quality.get("correlation_audit", {})
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(corr.get("redundant_groups", []))),
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(corr.get("highly_correlated_pairs", [])).head(100)),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with quality_tabs[4]:
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(quality.get("univariate_ic", [])).head(200)),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+    with st.expander("Event Feature Coverage / Timing", expanded=False):
+        st.caption(
+            "Phase 2D-5 artifacts audit SEC, earnings, catalyst, and LLM-supported event coverage/timing. "
+            "They are derived from point-in-time dataset features and local event tables only; no provider calls are made."
+        )
+        event_dir = settings.database_file.parent / "processed"
+        event_artifacts = list_event_redesign_artifacts(event_dir)
+        event_options = {
+            f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in event_artifacts
+        }
+        event_confirm = st.checkbox(
+            "I understand event redesign artifacts are research-only and do not affect scanner scoring.",
+            key="model_lab_event_redesign_confirm",
+        )
+        if st.button("Generate Event Coverage / Timing Artifacts", disabled=not event_confirm):
+            with st.spinner("Auditing event feature coverage and timing..."):
+                coverage = build_event_coverage_audit(settings.database_file, dataset_id)
+                timing = build_event_timing_audit(settings.database_file, dataset_id)
+                coverage_path = write_event_artifact(coverage, event_dir)
+                timing_path = write_event_artifact(timing, event_dir)
+            st.success(f"Saved artifacts: {coverage_path.name}, {timing_path.name}")
+            event_artifacts = list_event_redesign_artifacts(event_dir)
+            event_options = {
+                f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in event_artifacts
+            }
+
+        if not event_options:
+            st.info("No Phase 2D-5 event redesign artifacts found yet.")
+        else:
+            selected_event = st.selectbox("Event artifact", list(event_options.keys()))
+            event_artifact = load_event_artifact(event_options[selected_event])
+            event_type = event_artifact.get("artifact_type", "event")
+            summary = event_artifact.get("summary", {})
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Artifact", event_type)
+            e2.metric("Rows", int(event_artifact.get("row_count", 0) or 0))
+            e3.metric("Derived Features", int(event_artifact.get("derived_feature_count", 0) or 0))
+            e4.metric("Timing Violations", int(summary.get("pre_availability_violation_count", 0) or 0))
+            if event_type == "event_coverage":
+                st.write("Inactive groups:", ", ".join(summary.get("inactive_groups", [])) or "none")
+                event_tabs = st.tabs(["Feature Sets", "Feature Activity", "Ticker Coverage", "Fold Density"])
+                with event_tabs[0]:
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(event_feature_set_rows(event_artifact))),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with event_tabs[1]:
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(event_artifact.get("active_observation_counts", [])).head(200)),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with event_tabs[2]:
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(event_artifact.get("coverage_by_ticker", []))),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with event_tabs[3]:
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(event_artifact.get("event_density_by_fold", []))),
+                        width="stretch",
+                        hide_index=True,
+                    )
+            elif event_type == "event_timing":
+                timing_tabs = st.tabs(["Summary", "Lag Buckets", "Violations"])
+                with timing_tabs[0]:
+                    st.json(summary, expanded=False)
+                    st.json(event_artifact.get("available_at_missing_counts", {}), expanded=False)
+                with timing_tabs[1]:
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(event_artifact.get("lag_bucket_summary", [])).head(300)),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with timing_tabs[2]:
+                    violations = event_artifact.get("pre_availability_violations", {})
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(violations.get("sec", []))),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    st.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(violations.get("earnings", []))),
+                        width="stretch",
+                        hide_index=True,
+                    )
+
+    with st.expander("Research Event Annotations", expanded=False):
+        st.caption(
+            "Research-only historical annotations for dataset/model experiments. They do not create active catalysts, "
+            "do not change scanner scoring, and are not trading recommendations."
+        )
+        annotation_dir = settings.database_file.parent / "processed"
+        annotation_tabs = st.tabs(["Manual Entry", "CSV Import", "News/Event Candidates", "Coverage / Baselines", "Stored Annotations"])
+        universe_tickers = load_universe(settings.universe_file)["ticker"].astype(str).str.upper().tolist()
+        with annotation_tabs[0]:
+            with st.form("manual_research_annotation_form", clear_on_submit=True):
+                a1, a2, a3, a4 = st.columns(4)
+                ticker = a1.selectbox("Ticker", universe_tickers, key="annotation_manual_ticker")
+                event_date_value = a2.date_input("Event date", value=date.today(), key="annotation_manual_event_date")
+                available_date = a3.date_input("Available date", value=event_date_value, key="annotation_manual_available_date")
+                available_time = a4.time_input("Available time", value=time(23, 59), key="annotation_manual_available_time")
+                b1, b2, b3, b4 = st.columns(4)
+                event_type = b1.selectbox("Event type", list(ANNOTATION_EVENT_TYPES), key="annotation_manual_event_type")
+                sentiment = b2.selectbox("Sentiment", list(ANNOTATION_SENTIMENT_LABELS), index=list(ANNOTATION_SENTIMENT_LABELS).index("unknown"), key="annotation_manual_sentiment")
+                strength = b3.slider("Strength", 0, 10, 0, key="annotation_manual_strength")
+                confidence = b4.slider("Confidence", 0.0, 1.0, 0.0, 0.05, key="annotation_manual_confidence")
+                title = st.text_input("Title", key="annotation_manual_title")
+                source = st.text_input("Source", value="manual", key="annotation_manual_source")
+                source_url = st.text_input("Source URL (optional)", key="annotation_manual_source_url")
+                summary_text = st.text_area("Summary", key="annotation_manual_summary")
+                evidence_text = st.text_area("Evidence text", key="annotation_manual_evidence")
+                tags_text = st.text_input("Tags (comma-separated)", key="annotation_manual_tags")
+                confirm_annotation = st.checkbox(
+                    "I understand this is research-only and has zero scanner scoring effect.",
+                    key="annotation_manual_confirm",
+                )
+                submitted = st.form_submit_button("Add Research Annotation", disabled=not confirm_annotation)
+            if submitted:
+                available_at = datetime.combine(available_date, available_time, tzinfo=UTC)
+                result = insert_annotation(
+                    settings.database_file,
+                    ResearchEventAnnotation(
+                        ticker=ticker,
+                        event_date=event_date_value,
+                        available_at=available_at,
+                        event_type=event_type,
+                        sentiment_label=sentiment,
+                        strength=strength,
+                        confidence=confidence,
+                        source=source or "manual",
+                        source_url=source_url or None,
+                        title=title,
+                        summary=summary_text,
+                        evidence_text=evidence_text,
+                        tags=[part.strip() for part in tags_text.split(",") if part.strip()],
+                    ),
+                )
+                if result.inserted:
+                    st.success(f"Stored research annotation #{result.annotation_id}.")
+                else:
+                    st.info(f"Duplicate annotation already exists as #{result.annotation_id}; no new row inserted.")
+
+        with annotation_tabs[1]:
+            st.write(
+                "CSV columns: ticker, event_date, available_at, event_type, sentiment_label, strength, confidence, "
+                "source, source_url, title, summary, evidence_text, tags."
+            )
+            upload = st.file_uploader("Upload annotation CSV", type=["csv"], key="annotation_csv_upload")
+            csv_confirm = st.checkbox(
+                "I understand imported annotations are research-only and do not affect scanner scoring.",
+                key="annotation_csv_confirm",
+            )
+            if upload is not None and csv_confirm and st.button("Import Annotation CSV", key="annotation_csv_import_button"):
+                try:
+                    import_frame = pd.read_csv(upload)
+                    import_result = parse_annotation_import_frame(import_frame)
+                    inserted = bulk_insert_annotations(settings.database_file, import_result.annotations)
+                    inserted_count = sum(1 for item in inserted if item.inserted)
+                    duplicate_count = sum(1 for item in inserted if not item.inserted)
+                    st.success(f"Imported {inserted_count} annotations; skipped {duplicate_count} database duplicates.")
+                    if import_result.errors:
+                        st.warning(f"{len(import_result.errors)} CSV rows were rejected.")
+                        st.dataframe(pd.DataFrame([item.__dict__ for item in import_result.errors]), width="stretch", hide_index=True)
+                    if import_result.warnings:
+                        st.info(f"{len(import_result.warnings)} CSV warnings.")
+                        st.dataframe(pd.DataFrame([item.__dict__ for item in import_result.warnings]), width="stretch", hide_index=True)
+                except Exception as exc:
+                    st.error(f"CSV import failed: {exc}")
+
+        with annotation_tabs[2]:
+            st.caption(
+                "Provider-style news/event candidate staging. Candidates are review-gated and do not affect models until accepted and imported as research-only annotations."
+            )
+            st.write(
+                "Candidate CSV columns: ticker, event_date, available_at, event_type, title, summary, source, source_url, "
+                "evidence_text, sentiment_label, strength, confidence, tags, provider_metadata_json."
+            )
+            candidate_upload = st.file_uploader("Upload news/event candidate CSV", type=["csv"], key="news_candidate_csv_upload")
+            candidate_confirm = st.checkbox(
+                "I understand staged candidates are research-only and have zero scanner scoring effect.",
+                key="news_candidate_stage_confirm",
+            )
+            if candidate_upload is not None and candidate_confirm and st.button("Stage Candidate CSV", key="news_candidate_stage_button"):
+                try:
+                    candidate_frame = pd.read_csv(candidate_upload)
+                    candidate_result = parse_candidate_import_frame(candidate_frame)
+                    staged = stage_candidates(settings.database_file, candidate_result.candidates)
+                    staged_count = sum(1 for item in staged if item.inserted and item.status == "staged")
+                    duplicate_count = sum(1 for item in staged if item.status == "duplicate")
+                    existing_count = sum(1 for item in staged if not item.inserted)
+                    artifact = build_candidate_ingestion_artifact(settings.database_file)
+                    artifact_path = annotation_dir / f"news_event_candidate_ingestion_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
+                    artifact_path.write_text(json.dumps(artifact, indent=2, default=str), encoding="utf-8")
+                    st.success(
+                        f"Staged {staged_count} candidate(s); marked {duplicate_count} duplicate(s); skipped {existing_count} existing staged row(s)."
+                    )
+                    st.caption(f"Candidate artifact saved: {artifact_path.name}")
+                    if candidate_result.errors:
+                        st.warning(f"{len(candidate_result.errors)} CSV rows were rejected.")
+                        st.dataframe(pd.DataFrame([item.__dict__ for item in candidate_result.errors]), width="stretch", hide_index=True)
+                    if candidate_result.warnings:
+                        st.info(f"{len(candidate_result.warnings)} CSV warnings.")
+                        st.dataframe(pd.DataFrame([item.__dict__ for item in candidate_result.warnings]), width="stretch", hide_index=True)
+                except Exception as exc:
+                    st.error(f"Candidate staging failed: {exc}")
+
+            status_counts = candidate_counts_by_status(settings.database_file)
+            if not status_counts.empty:
+                st.write("Candidate status counts")
+                st.dataframe(dataframe_for_streamlit(status_counts), width="stretch", hide_index=True)
+
+            status_filter = st.selectbox(
+                "Candidate status filter",
+                ["staged", "accepted", "rejected", "duplicate", "imported", "all"],
+                key="news_candidate_status_filter",
+            )
+            candidate_frame = list_candidates(
+                settings.database_file,
+                status=None if status_filter == "all" else status_filter,
+                limit=300,
+            )
+            if candidate_frame.empty:
+                st.info("No news/event candidates found for this filter.")
+            else:
+                candidate_cols = [
+                    "candidate_id",
+                    "status",
+                    "ticker",
+                    "event_date",
+                    "available_at",
+                    "event_type",
+                    "sentiment_label",
+                    "strength",
+                    "confidence",
+                    "source",
+                    "title",
+                    "duplicate_reason",
+                    "imported_annotation_id",
+                ]
+                st.dataframe(
+                    dataframe_for_streamlit(candidate_frame[[col for col in candidate_cols if col in candidate_frame.columns]]),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                reviewable = candidate_frame[candidate_frame["status"].isin(["staged", "accepted", "rejected"])]
+                if not reviewable.empty:
+                    st.write("Review selected candidate")
+                    review_id = int(
+                        st.selectbox(
+                            "Candidate ID",
+                            reviewable["candidate_id"].astype(int).tolist(),
+                            format_func=lambda value: f"#{value}",
+                            key="news_candidate_review_id",
+                        )
+                    )
+                    selected_candidate = candidate_frame[candidate_frame["candidate_id"].astype(int).eq(review_id)].iloc[0]
+                    with st.expander("Candidate details", expanded=False):
+                        st.json(
+                            {
+                                "ticker": selected_candidate.get("ticker"),
+                                "event_date": selected_candidate.get("event_date"),
+                                "available_at": selected_candidate.get("available_at"),
+                                "event_type": selected_candidate.get("event_type"),
+                                "sentiment_label": selected_candidate.get("sentiment_label"),
+                                "source_url": selected_candidate.get("source_url"),
+                                "summary": selected_candidate.get("summary"),
+                                "evidence_text": selected_candidate.get("evidence_text"),
+                                "provider_metadata": selected_candidate.get("provider_metadata"),
+                                "scanner_scoring_effect": 0,
+                            },
+                            expanded=False,
+                        )
+                    r1, r2 = st.columns(2)
+                    if r1.button("Accept Candidate", key="news_candidate_accept_button"):
+                        try:
+                            accept_candidate(settings.database_file, review_id)
+                            st.success(f"Accepted candidate #{review_id}.")
+                        except Exception as exc:
+                            st.error(f"Accept failed: {exc}")
+                    reject_reason = r2.text_input("Reject reason", key="news_candidate_reject_reason")
+                    if r2.button("Reject Candidate", key="news_candidate_reject_button"):
+                        try:
+                            reject_candidate(settings.database_file, review_id, reason=reject_reason or "Rejected in review.")
+                            st.success(f"Rejected candidate #{review_id}.")
+                        except Exception as exc:
+                            st.error(f"Reject failed: {exc}")
+
+            import_confirm = st.checkbox(
+                "I understand accepted candidates will import only as research annotations and will not create active catalysts.",
+                key="news_candidate_import_confirm",
+            )
+            if st.button("Import Accepted Candidates", disabled=not import_confirm, key="news_candidate_import_accepted"):
+                try:
+                    summary = import_accepted_candidates(settings.database_file)
+                    artifact = build_candidate_ingestion_artifact(settings.database_file)
+                    artifact_path = annotation_dir / f"news_event_candidate_ingestion_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
+                    artifact_path.write_text(json.dumps(artifact, indent=2, default=str), encoding="utf-8")
+                    st.success(
+                        f"Imported {summary.imported_count} accepted candidate(s); skipped {summary.skipped_count}. "
+                        f"Artifact: {artifact_path.name}"
+                    )
+                    for warning in summary.warnings[:10]:
+                        st.warning(warning)
+                except Exception as exc:
+                    st.error(f"Accepted-candidate import failed: {exc}")
+
+        with annotation_tabs[3]:
+            st.caption("Coverage artifacts and optional simple baseline reruns use Dataset Lab rows point-in-time; no provider or LLM calls are made.")
+            annotation_artifacts = list_annotation_artifacts(annotation_dir)
+            artifact_options = {
+                f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in annotation_artifacts
+            }
+            coverage_confirm = st.checkbox(
+                "I understand annotation coverage/baselines are research-only and do not affect scanner scoring.",
+                key="annotation_coverage_confirm",
+            )
+            c_left, c_right = st.columns(2)
+            if c_left.button("Generate Annotation Coverage Artifact", disabled=not coverage_confirm, key="annotation_generate_coverage"):
+                with st.spinner("Building point-in-time annotation coverage artifact..."):
+                    coverage = build_annotation_coverage_audit(settings.database_file, dataset_id)
+                    artifact_path = write_annotation_artifact(coverage, annotation_dir)
+                st.success(f"Saved annotation artifact: {artifact_path.name}")
+                annotation_artifacts = list_annotation_artifacts(annotation_dir)
+                artifact_options = {
+                    f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in annotation_artifacts
+                }
+            if c_right.button("Run Annotation Baselines", disabled=not coverage_confirm, key="annotation_run_baselines"):
+                with st.spinner("Running annotation feature baselines..."):
+                    coverage, artifact_path, summaries = run_annotation_baseline_suite(settings.database_file, dataset_id, annotation_dir)
+                st.success(f"Stored {len(summaries)} annotation baseline runs. Coverage artifact: {artifact_path.name}")
+                annotation_artifacts = list_annotation_artifacts(annotation_dir)
+                artifact_options = {
+                    f"Dataset {item.dataset_id} | {item.created_at} | {item.path.name}": item.path for item in annotation_artifacts
+                }
+            if not artifact_options:
+                st.info("No Phase 2D-6A annotation artifacts found yet.")
+            else:
+                selected_annotation_artifact = st.selectbox("Annotation artifact", list(artifact_options.keys()))
+                annotation_artifact = load_annotation_artifact(artifact_options[selected_annotation_artifact])
+                summary = annotation_artifact.get("summary", {})
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Rows", int(annotation_artifact.get("row_count", 0) or 0))
+                m2.metric("Annotation Rows", int(summary.get("annotation_rows", 0) or 0))
+                m3.metric("Covered Rows", int(summary.get("rows_with_annotation_coverage", 0) or 0))
+                m4.metric("Active Rate", f"{float(summary.get('annotation_active_rate', 0) or 0):.2%}")
+                ann_tabs = st.tabs(["Feature Activity", "Ticker Coverage", "Fold Coverage", "DB Summary"])
+                with ann_tabs[0]:
+                    st.dataframe(dataframe_for_streamlit(pd.DataFrame(annotation_artifact.get("active_observation_counts", []))), width="stretch", hide_index=True)
+                with ann_tabs[1]:
+                    st.dataframe(dataframe_for_streamlit(pd.DataFrame(annotation_artifact.get("coverage_by_ticker", []))), width="stretch", hide_index=True)
+                with ann_tabs[2]:
+                    st.dataframe(dataframe_for_streamlit(pd.DataFrame(annotation_artifact.get("coverage_by_fold", []))), width="stretch", hide_index=True)
+                with ann_tabs[3]:
+                    st.json(annotation_artifact.get("annotation_db_summary", {}), expanded=False)
+
+        with annotation_tabs[4]:
+            counts = annotation_counts_by_ticker(settings.database_file)
+            if not counts.empty:
+                st.dataframe(dataframe_for_streamlit(counts), width="stretch", hide_index=True)
+            recent_annotations = list_annotations(settings.database_file, limit=200)
+            if recent_annotations.empty:
+                st.info("No research-only annotations stored yet.")
+            else:
+                display_cols = [
+                    "annotation_id",
+                    "ticker",
+                    "event_date",
+                    "available_at",
+                    "event_type",
+                    "sentiment_label",
+                    "strength",
+                    "confidence",
+                    "source",
+                    "title",
+                    "research_only",
+                    "scanner_scoring_effect",
+                ]
+                st.dataframe(
+                    dataframe_for_streamlit(recent_annotations[[col for col in display_cols if col in recent_annotations.columns]]),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+    with st.expander("Run Selected Baseline", expanded=False):
+        st.caption("Runs one leakage-safe chronological/walk-forward baseline and stores metrics/predictions locally.")
+        confirm = st.checkbox("I understand this does not affect scanner scoring.", key="model_lab_confirm_run")
+        if st.button("Run Baseline Model", disabled=not confirm):
+            with st.spinner("Running baseline model..."):
+                summary = run_single_baseline_model(
+                    settings.database_file,
+                    dataset_id=dataset_id,
+                    target_column=target_name,
+                    feature_set_name=feature_set_name,
+                    model_name=model_name,
+                )
+            st.success(f"Stored model run #{summary.model_run_id}.")
+            if summary.warnings:
+                st.warning("; ".join(summary.warnings[:5]))
+
+    runs = list_model_runs(settings.database_file, limit=200)
+    st.subheader("Available Model Runs")
+    if runs.empty:
+        st.info("No model runs stored yet.")
+        return
+
+    filters = st.columns(4)
+    dataset_filter = filters[0].selectbox(
+        "Filter dataset",
+        ["All", *sorted(runs["dataset_id"].dropna().astype(int).unique().tolist())],
+    )
+    horizon_filter = filters[1].selectbox(
+        "Filter horizon",
+        ["All", *sorted(runs["target_horizon"].dropna().astype(str).unique().tolist())],
+    )
+    feature_filter = filters[2].selectbox(
+        "Filter feature set",
+        ["All", *sorted(runs["feature_set_name"].dropna().astype(str).unique().tolist())],
+    )
+    model_filter = filters[3].selectbox(
+        "Filter model",
+        ["All", *sorted(runs["model_name"].dropna().astype(str).unique().tolist())],
+    )
+
+    filtered = runs.copy()
+    if dataset_filter != "All":
+        filtered = filtered[filtered["dataset_id"].astype(int).eq(int(dataset_filter))]
+    if horizon_filter != "All":
+        filtered = filtered[filtered["target_horizon"].astype(str).eq(str(horizon_filter))]
+    if feature_filter != "All":
+        filtered = filtered[filtered["feature_set_name"].astype(str).eq(str(feature_filter))]
+    if model_filter != "All":
+        filtered = filtered[filtered["model_name"].astype(str).eq(str(model_filter))]
+
+    display_cols = [
+        "model_run_id",
+        "dataset_id",
+        "target_column",
+        "target_horizon",
+        "feature_set_name",
+        "model_name",
+        "task",
+        "status",
+        "created_at",
+        "completed_at",
+    ]
+    st.dataframe(filtered[[col for col in display_cols if col in filtered.columns]], width="stretch", hide_index=True)
+    if filtered.empty:
+        return
+
+    selected_run_id = int(st.selectbox("Inspect model run", filtered["model_run_id"].astype(int).tolist()))
+    run_row = filtered[filtered["model_run_id"].astype(int).eq(selected_run_id)].iloc[0]
+    st.caption(
+        f"Run #{selected_run_id}: {run_row['model_name']} on {run_row['feature_set_name']} for {run_row['target_horizon']}. "
+        "Prediction preview is informational only."
+    )
+
+    fold_metrics = _metrics_records(list_model_fold_metrics(settings.database_file, selected_run_id))
+    final_metrics = _metrics_records(list_model_final_metrics(settings.database_file, selected_run_id))
+    tabs = st.tabs(["Fold Metrics", "Final Test Metrics", "Prediction Preview", "Config"])
+    with tabs[0]:
+        if fold_metrics.empty:
+            st.info("No fold metrics stored.")
+        else:
+            st.dataframe(fold_metrics, width="stretch", hide_index=True)
+    with tabs[1]:
+        if final_metrics.empty:
+            st.info("No final test metrics stored.")
+        else:
+            st.dataframe(final_metrics, width="stretch", hide_index=True)
+            raw_matches = runs[
+                runs["dataset_id"].astype(int).eq(int(run_row["dataset_id"]))
+                & runs["target_column"].astype(str).eq(RAW_TARGET_5_SESSION)
+                & runs["feature_set_name"].astype(str).eq(str(run_row["feature_set_name"]))
+                & runs["model_name"].astype(str).eq(str(run_row["model_name"]))
+                & runs["status"].astype(str).eq("completed")
+            ]
+            if str(run_row["target_column"]) != RAW_TARGET_5_SESSION and not raw_matches.empty:
+                raw_run_id = int(raw_matches.sort_values("model_run_id", ascending=False).iloc[0]["model_run_id"])
+                raw_metrics = _metrics_records(list_model_final_metrics(settings.database_file, raw_run_id))
+                if not raw_metrics.empty:
+                    selected_metrics = final_metrics.iloc[0].to_dict()
+                    raw_metric_values = raw_metrics.iloc[0].to_dict()
+                    comparison_rows = []
+                    for metric in [
+                        "rmse",
+                        "mae",
+                        "oos_r2_vs_train_mean",
+                        "spearman_ic",
+                        "mean_daily_cross_sectional_ic",
+                        "directional_accuracy",
+                        "balanced_accuracy",
+                        "roc_auc",
+                    ]:
+                        if metric in selected_metrics or metric in raw_metric_values:
+                            selected_value = selected_metrics.get(metric)
+                            raw_value = raw_metric_values.get(metric)
+                            try:
+                                delta = float(selected_value) - float(raw_value)
+                            except Exception:
+                                delta = None
+                            comparison_rows.append(
+                                {
+                                    "metric": metric,
+                                    "selected_target": selected_value,
+                                    "raw_5_session_baseline": raw_value,
+                                    "delta_selected_minus_raw": delta,
+                                }
+                            )
+                    st.write(f"Comparison against raw 5-session run #{raw_run_id}")
+                    st.dataframe(pd.DataFrame(comparison_rows), width="stretch", hide_index=True)
+    with tabs[2]:
+        predictions = list_model_predictions(settings.database_file, selected_run_id, limit=500)
+        if predictions.empty:
+            st.info("No predictions stored.")
+        else:
+            preview_cols = [
+                "snapshot_id",
+                "ticker",
+                "snapshot_date",
+                "target_horizon",
+                "split_name",
+                "fold_name",
+                "y_true",
+                "y_pred",
+                "y_pred_label",
+                "y_score",
+            ]
+            st.dataframe(predictions[[col for col in preview_cols if col in predictions.columns]], width="stretch", hide_index=True)
+    with tabs[3]:
+        st.json(
+            {
+                "config": json.loads(run_row.get("config_json") or "{}"),
+                "split_config": json.loads(run_row.get("split_config_json") or "{}"),
+                "feature_columns": json.loads(run_row.get("feature_columns_json") or "[]"),
+                "warnings": json.loads(run_row.get("warnings_json") or "[]"),
+            }
+        )
 
 
 def validation_debug_page(settings: Settings) -> None:
