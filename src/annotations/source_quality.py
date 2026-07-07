@@ -40,6 +40,7 @@ SOURCE_QUALITY_ALIASES = {
     "sec_edgar": "sec_archive",
     "sec_local": "sec_archive",
     "manual": "manual_note",
+    "manual_csv": "manual_note",
     "csv_manual": "manual_note",
     "manual_demo": "manual_note",
     "local_earnings_events": "manual_note",

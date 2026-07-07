@@ -11,6 +11,9 @@ from src.annotations.models import ANNOTATION_EVENT_TYPES, ANNOTATION_SENTIMENT_
 from src.annotations.news_events import NewsEventProvider, ResearchEventAnnotationCandidate
 
 
+MANUAL_CSV_PROVIDER_NAME = "manual_csv"
+
+
 REQUIRED_CANDIDATE_COLUMNS = {"ticker", "event_date", "title"}
 
 
@@ -86,7 +89,7 @@ def _parse_metadata(value: Any) -> dict[str, Any]:
         return {"raw": text}
 
 
-def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = "csv_manual") -> CandidateImportResult:
+def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = MANUAL_CSV_PROVIDER_NAME) -> CandidateImportResult:
     """Validate a provider-style news/event candidate CSV without importing annotations."""
     if frame is None or frame.empty:
         return CandidateImportResult(errors=[CandidateImportError(row_number=0, message="CSV is empty.")])
@@ -145,6 +148,9 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = "csv_manua
         evidence_text = str(_cell(row, "evidence_text", "")).strip()
         metadata = _parse_metadata(_cell(row, "provider_metadata_json", _cell(row, "metadata", "")))
         metadata.setdefault("csv_row_number", row_number)
+        metadata.setdefault("provider_name", provider)
+        metadata.setdefault("provider_type", "manual_csv")
+        metadata.setdefault("network_calls_would_occur", False)
         for optional_key in [
             "source_quality",
             "informativeness",
@@ -155,7 +161,8 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = "csv_manua
             optional_value = str(_cell(row, optional_key, "")).strip()
             if optional_value:
                 metadata[optional_key] = optional_value
-        provider_name = str(_cell(row, "provider_name", provider)).strip() or provider
+        provider_name = str(_cell(row, "provider_name", metadata.get("provider_name", provider))).strip() or provider
+        metadata["provider_name"] = provider_name
         quality_tags = []
         source_quality = metadata.get("source_quality")
         informativeness = metadata.get("informativeness")
@@ -194,7 +201,7 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = "csv_manua
 
 
 class CsvManualNewsEventProvider:
-    provider_name = "csv_manual"
+    provider_name = MANUAL_CSV_PROVIDER_NAME
 
     def __init__(self, frame: pd.DataFrame):
         self.frame = frame

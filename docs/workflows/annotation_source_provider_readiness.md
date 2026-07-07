@@ -31,6 +31,42 @@ This roadmap is for research-only event/annotation coverage. It does not authori
 | Paid news provider | Low-medium | Medium | Medium-high depending provider | Strong | Yes | Deferred until budget/API approved |
 | Stocktwits/social-style provider | Medium-high | Medium-high | Unknown/noisy | Medium | Possible, but needs compliance review | Deferred |
 
+## Provider Registry Contract
+
+Research-event sources are represented by a provider registry before any network integration is enabled. A provider entry should expose:
+
+- `provider_name`
+- `provider_type`
+- `enabled`
+- `requires_api_key`
+- `rate_limit_notes`
+- `compliance_notes`
+- `supports_point_in_time_available_at`
+- `supports_backfill`
+- `source_quality_default`
+- `allowed_usage`
+- `config_status`
+- `next_action_required`
+
+The common provider interface is:
+
+- `validate_config()`
+- `fetch_candidates(ticker, start_date, end_date)`
+- `normalize_candidate(raw_item)`
+- `provider_status()`
+
+Current registry state:
+
+- `manual_csv`: enabled, local CSV/manual staging only, no API key, no network calls.
+- `rss_manual_url_stub`: disabled placeholder; future user-supplied RSS/manual URLs only, no crawling.
+- `reddit_api_placeholder`: disabled placeholder; official API access required, no scraping.
+
+Use the quality harness command below to audit provider readiness without making provider calls:
+
+```bash
+.venv/bin/python scripts/quality_harness.py provider-readiness
+```
+
 ## Recommendation
 
 Prioritize a protocol-driven manual/company-IR workflow before social data. The next useful source expansion should target non-SEC, material public events with clear timestamps and source URLs:

@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.annotations.provider_registry import build_provider_readiness_report
 from src.data import storage
 from src.modeling.annotation_features import build_annotation_coverage_audit, derive_annotation_features
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
@@ -352,6 +353,26 @@ def check_holdout_status(db_path: str | Path, dataset_id: int) -> HarnessResult:
             "extension_plan": extension_plan,
         },
     )
+
+
+def check_provider_readiness() -> HarnessResult:
+    report = build_provider_readiness_report()
+    violations: list[str] = []
+    if report.get("network_calls_would_occur"):
+        violations.append("One or more configured research-event providers would make network calls.")
+    if report.get("guardrails", {}).get("scanner_scoring_effect") != 0:
+        violations.append("Provider readiness guardrail reports a nonzero scanner scoring effect.")
+    status = "passed" if not violations else "failed"
+    summary = {
+        "configured_provider_count": report.get("configured_provider_count"),
+        "enabled_provider_count": report.get("enabled_provider_count"),
+        "blocked_or_disabled_provider_count": report.get("blocked_or_disabled_provider_count"),
+        "requires_api_key_count": report.get("requires_api_key_count"),
+        "network_calls_would_occur": report.get("network_calls_would_occur"),
+        "provider_readiness_check": status,
+        "violation_count": len(violations),
+    }
+    return HarnessResult(status, summary, {"violations": violations, **report})
 
 
 def _annotation_future_availability_violations(db_path: str | Path, dataset_id: int) -> list[dict[str, Any]]:

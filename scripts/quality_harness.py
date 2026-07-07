@@ -16,6 +16,7 @@ from src.quality.harness import (
     check_annotation_coverage,
     check_dataset_manifest,
     check_holdout_status,
+    check_provider_readiness,
     compare_model_run_to_baseline,
     compare_scanner_snapshots,
     latest_scan_snapshot,
@@ -119,6 +120,15 @@ def health_check(args: argparse.Namespace) -> int:
     return 0 if result.status == "passed" else 2
 
 
+def provider_readiness(args: argparse.Namespace) -> int:
+    result = check_provider_readiness()
+    payload = {"status": result.status, "summary": result.summary, "details": result.details}
+    if args.output:
+        write_json_artifact(args.output, payload)
+    _print_result(payload)
+    return 0 if result.status == "passed" else 2
+
+
 def final_report(args: argparse.Namespace) -> int:
     report = build_final_report(
         runtime_status=args.runtime_status,
@@ -192,6 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--timeout", type=float, default=5.0)
     cmd.add_argument("--output")
     cmd.set_defaults(func=health_check)
+
+    cmd = sub.add_parser("provider-readiness", help="Report research-event provider readiness without making provider calls.")
+    cmd.add_argument("--output")
+    cmd.set_defaults(func=provider_readiness)
 
     cmd = sub.add_parser("final-report", help="Create a consistent phase report artifact.")
     cmd.add_argument("--runtime-status", required=True)

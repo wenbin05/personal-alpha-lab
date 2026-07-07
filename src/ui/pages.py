@@ -20,6 +20,7 @@ from src.annotations.news_repository import (
     reject_candidate,
     stage_candidates,
 )
+from src.annotations.provider_registry import build_provider_readiness_report
 from src.annotations.repository import annotation_counts_by_ticker, bulk_insert_annotations, insert_annotation, list_annotations
 from src.annotations.source_quality import enrich_quality_frame, quality_distribution
 from src.alerts.alert_formatter import format_alert, suggested_watch_action
@@ -2847,6 +2848,39 @@ def model_lab_page(settings: Settings) -> None:
                         width="stretch",
                         hide_index=True,
                     )
+
+    with st.expander("Research Event Provider Readiness", expanded=False):
+        st.caption(
+            "Read-only provider registry for future research-event candidates. This panel makes no provider calls, "
+            "does not import candidates, and has zero scanner scoring effect."
+        )
+        readiness = build_provider_readiness_report()
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Configured", int(readiness.get("configured_provider_count", 0) or 0))
+        r2.metric("Enabled", int(readiness.get("enabled_provider_count", 0) or 0))
+        r3.metric("API Key Providers", int(readiness.get("requires_api_key_count", 0) or 0))
+        r4.metric("Network Calls", "Yes" if readiness.get("network_calls_would_occur") else "No")
+        provider_rows = pd.DataFrame(readiness.get("providers", []))
+        provider_cols = [
+            "provider_name",
+            "provider_type",
+            "enabled",
+            "config_status",
+            "requires_api_key",
+            "supports_point_in_time_available_at",
+            "supports_backfill",
+            "source_quality_default",
+            "allowed_usage",
+            "compliance_notes",
+            "next_action_required",
+            "network_calls_would_occur",
+        ]
+        st.dataframe(
+            dataframe_for_streamlit(provider_rows[[col for col in provider_cols if col in provider_rows.columns]]),
+            width="stretch",
+            hide_index=True,
+        )
+        st.json(readiness.get("guardrails", {}), expanded=False)
 
     with st.expander("Research Event Annotations", expanded=False):
         st.caption(
