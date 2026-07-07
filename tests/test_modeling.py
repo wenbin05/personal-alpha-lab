@@ -31,6 +31,17 @@ from src.modeling.diagnostics import (
     load_diagnostics_artifact,
     write_diagnostics_artifact,
 )
+from src.modeling.evaluation_regime import (
+    DATASET_49_INSPECTED_RUN_IDS,
+    DatasetEvaluationRegime,
+    build_holdout_status_artifact,
+    default_annotation_expansion_plan,
+    get_dataset_evaluation_regime,
+    label_model_runs,
+    upsert_dataset_evaluation_regime,
+    validate_evaluation_regime,
+)
+from src.modeling.holdout_maturity import HoldoutMaturityThresholds, assess_holdout_maturity, build_holdout_extension_plan
 from src.modeling.metrics import regression_metrics
 from src.modeling.preprocessing import fit_transform_matrices
 from src.modeling.repository import list_model_final_metrics, list_model_fold_metrics, list_model_predictions
@@ -253,6 +264,157 @@ def test_model_run_persists_metrics_predictions_and_does_not_change_scoring(tmp_
     assert not list_model_fold_metrics(db_path, summary.model_run_id).empty
     assert not list_model_final_metrics(db_path, summary.model_run_id).empty
     assert not list_model_predictions(db_path, summary.model_run_id).empty
+
+
+def test_evaluation_regime_labels_known_inspected_runs_as_exploratory() -> None:
+    labels = label_model_runs([145, 999], inspected_run_ids=DATASET_49_INSPECTED_RUN_IDS)
+    by_run = {label.model_run_id: label for label in labels}
+
+    assert by_run[145].evaluation_regime == "exploratory_dev"
+    assert by_run[999].evaluation_regime == "holdout_candidate"
+    assert "iterative" in by_run[145].reason
+    assert validate_evaluation_regime("final_holdout") == "final_holdout"
+    with pytest.raises(ValueError, match="Unknown evaluation regime"):
+        validate_evaluation_regime("random_split")
+
+
+def test_holdout_status_artifact_documents_dataset49_and_no_import(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    dataset_id = _seed_model_dataset(db_path)
+    summary = run_single_baseline_model(
+        db_path,
+        dataset_id,
+        "label_5_session_excess_return",
+        "technical_core",
+        "ridge_regression",
+        n_folds=2,
+        phase="test",
+    )
+
+    artifact = build_holdout_status_artifact(
+        db_path,
+        dataset_id=dataset_id,
+        inspected_run_ids=(summary.model_run_id,),
+    )
+    plan = default_annotation_expansion_plan()
+
+    assert artifact["decision"]["dataset_49_future_role"] == "exploratory_dev"
+    assert artifact["decision"]["candidate_import_this_phase"] is False
+    assert artifact["decision"]["modeling_this_phase"] is False
+    assert artifact["inspected_model_runs"][0]["evaluation_regime"] == "exploratory_dev"
+    assert plan["scanner_scoring_effect"] == 0
+    assert plan["active_catalyst_creation"] is False
+
+
+def test_dataset_evaluation_regime_metadata_round_trip(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    dataset_id = _seed_model_dataset(db_path)
+
+    upsert_dataset_evaluation_regime(
+        db_path,
+        DatasetEvaluationRegime(
+            dataset_id=dataset_id,
+            evaluation_regime="holdout_candidate",
+            parent_dataset_id=49,
+            strategy="time_forward",
+            rationale="Fresh post-development candidate; do not evaluate as final holdout.",
+            metadata={"label_horizons_ready": False},
+        ),
+    )
+    row = get_dataset_evaluation_regime(db_path, dataset_id)
+
+    assert row is not None
+    assert row["dataset_id"] == dataset_id
+    assert row["evaluation_regime"] == "holdout_candidate"
+    assert row["parent_dataset_id"] == 49
+    assert row["metadata"]["label_horizons_ready"] is False
+
+
+def test_holdout_maturity_blocks_immature_candidate(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    dataset_id = _seed_model_dataset(db_path)
+    upsert_dataset_evaluation_regime(
+        db_path,
+        DatasetEvaluationRegime(
+            dataset_id=dataset_id,
+            evaluation_regime="holdout_candidate",
+            parent_dataset_id=49,
+            strategy="time_forward",
+            rationale="Synthetic candidate.",
+        ),
+    )
+
+    maturity = assess_holdout_maturity(db_path, dataset_id)
+
+    assert maturity["readiness"]["protocol_validation"]["ready"] is True
+    assert maturity["readiness"]["holdout_candidate_sanity_check"]["ready"] is False
+    assert maturity["readiness"]["final_holdout_evaluation_5_session"]["ready"] is False
+    assert maturity["promotion"]["allowed_for_5_session"] is False
+    assert "row_count" in maturity["readiness"]["holdout_candidate_sanity_check"]["blockers"][0]
+
+
+def test_holdout_maturity_can_pass_with_explicit_low_test_thresholds(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    dataset_id = _seed_model_dataset(db_path)
+    upsert_dataset_evaluation_regime(
+        db_path,
+        DatasetEvaluationRegime(
+            dataset_id=dataset_id,
+            evaluation_regime="holdout_candidate",
+            parent_dataset_id=49,
+            strategy="time_forward",
+            rationale="Synthetic candidate.",
+        ),
+    )
+
+    maturity = assess_holdout_maturity(
+        db_path,
+        dataset_id,
+        thresholds=HoldoutMaturityThresholds(
+            sanity_min_rows=10,
+            sanity_min_tickers=2,
+            sanity_min_5_session_labeled_dates=5,
+            sanity_min_5_session_coverage=0.5,
+            final_min_rows=10,
+            final_min_tickers=2,
+            final_min_5_session_labeled_dates=5,
+            final_min_5_session_coverage=0.5,
+            final_min_20_session_labeled_dates=0,
+            final_min_20_session_coverage=0.0,
+        ),
+    )
+
+    assert maturity["readiness"]["holdout_candidate_sanity_check"]["ready"] is True
+    assert maturity["readiness"]["final_holdout_evaluation_5_session"]["ready"] is True
+    assert maturity["promotion"]["explicit_user_confirmation_required"] is True
+
+
+def test_holdout_extension_plan_is_cache_only_and_new_dataset(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    dataset_id = _seed_model_dataset(db_path)
+    dates = pd.bdate_range("2024-04-01", periods=3)
+    frame = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [100.0, 101.0, 102.0],
+            "high": [101.0, 102.0, 103.0],
+            "low": [99.0, 100.0, 101.0],
+            "close": [100.5, 101.5, 102.5],
+            "adj_close": [100.5, 101.5, 102.5],
+            "volume": [1_000_000, 1_100_000, 1_200_000],
+        }
+    )
+    storage.upsert_ohlcv(db_path, "AAA", frame)
+    storage.upsert_ohlcv(db_path, "BBB", frame)
+
+    plan = build_holdout_extension_plan(db_path, dataset_id)
+
+    assert plan["cache_only_default"] is True
+    assert plan["provider_fetch_allowed_by_default"] is False
+    assert plan["extension_available"] is True
+    assert plan["recommended_action"] == "create_new_holdout_candidate_dataset"
+    assert plan["candidate_start_date"] == "2024-04-01"
+    assert plan["extension_trading_day_count"] == 3
 
 
 def test_feature_diagnostics_handles_boolean_and_correlated_features() -> None:

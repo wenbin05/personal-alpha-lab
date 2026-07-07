@@ -53,7 +53,33 @@ Recommended columns:
 - `strength`
 - `confidence`
 - `tags`
+- `source_quality`
+- `informativeness`
+- `review_note`
+- `provider_name`
+- `provider_event_id`
+- `duplicate_theme_key`
 - `provider_metadata_json`
+
+Source-quality categories:
+
+- `official_company`
+- `regulator`
+- `exchange_or_index_provider`
+- `sec_archive`
+- `credible_news`
+- `manual_note`
+- `unknown`
+
+Event-informativeness labels:
+
+- `material_high`
+- `material_medium`
+- `routine_low`
+- `duplicate_theme`
+- `low_specificity`
+
+If these fields are omitted, the app infers them conservatively from source, source URL, event type, sentiment, strength, confidence, tags, and text specificity. Inferred labels are audit metadata only unless a future phase explicitly promotes them into model-facing features.
 
 ## Deduplication
 

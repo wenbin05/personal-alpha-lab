@@ -145,6 +145,27 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = "csv_manua
         evidence_text = str(_cell(row, "evidence_text", "")).strip()
         metadata = _parse_metadata(_cell(row, "provider_metadata_json", _cell(row, "metadata", "")))
         metadata.setdefault("csv_row_number", row_number)
+        for optional_key in [
+            "source_quality",
+            "informativeness",
+            "review_note",
+            "provider_event_id",
+            "duplicate_theme_key",
+        ]:
+            optional_value = str(_cell(row, optional_key, "")).strip()
+            if optional_value:
+                metadata[optional_key] = optional_value
+        provider_name = str(_cell(row, "provider_name", provider)).strip() or provider
+        quality_tags = []
+        source_quality = metadata.get("source_quality")
+        informativeness = metadata.get("informativeness")
+        duplicate_theme_key = metadata.get("duplicate_theme_key")
+        if source_quality:
+            quality_tags.append(f"source_quality:{source_quality}")
+        if informativeness:
+            quality_tags.append(f"informativeness:{informativeness}")
+        if duplicate_theme_key:
+            quality_tags.append(f"duplicate_theme_key:{duplicate_theme_key}")
         candidate = ResearchEventAnnotationCandidate(
             ticker=ticker,
             event_date=event_date,
@@ -158,8 +179,8 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = "csv_manua
             sentiment_label=sentiment,
             strength=strength,
             confidence=confidence,
-            tags=normalize_tags(_cell(row, "tags", "")),
-            provider=provider,
+            tags=normalize_tags([*normalize_tags(_cell(row, "tags", "")), *quality_tags]),
+            provider=provider_name,
             provider_metadata=metadata,
         )
         row_key = (candidate.ticker, candidate.event_date.isoformat(), candidate.title.strip().lower())
@@ -186,4 +207,3 @@ class CsvManualNewsEventProvider:
             for candidate in result.candidates
             if candidate.ticker == ticker_upper and start_date <= candidate.event_date <= end_date
         ]
-

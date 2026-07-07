@@ -13,6 +13,7 @@ import pandas as pd
 
 from src.data import storage
 from src.modeling.annotation_features import build_annotation_coverage_audit, derive_annotation_features
+from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
 from src.modeling.repository import list_model_final_metrics
 
 
@@ -313,11 +314,42 @@ def check_annotation_coverage(db_path: str | Path, dataset_id: int = 49) -> Harn
         status=status,
         summary=summary,
         details={
+            "warnings": audit.get("warnings", []),
             "zero_coverage_features": zero_features,
             "future_availability_violations": violations,
             "coverage_by_ticker": audit.get("coverage_by_ticker", []),
             "coverage_by_fold": audit.get("coverage_by_fold", []),
+            "source_quality_signal_coverage": audit.get("source_quality_signal_coverage", []),
+            "fold_density_status": audit.get("fold_density_status"),
             "annotation_db_summary": audit.get("annotation_db_summary", {}),
+        },
+    )
+
+
+def check_holdout_status(db_path: str | Path, dataset_id: int) -> HarnessResult:
+    maturity = assess_holdout_maturity(db_path, dataset_id)
+    extension_plan = build_holdout_extension_plan(db_path, dataset_id)
+    manifest_ok = int(maturity.get("manifest", {}).get("violation_count", 0) or 0) == 0
+    status = "passed" if manifest_ok else "failed"
+    summary = {
+        "dataset_id": int(dataset_id),
+        "evaluation_regime": maturity.get("evaluation_regime"),
+        "row_count": maturity.get("row_count"),
+        "ticker_count": maturity.get("ticker_count"),
+        "date_range": maturity.get("date_range"),
+        "label_coverage": maturity.get("label_coverage"),
+        "readiness": maturity.get("readiness"),
+        "promotion": maturity.get("promotion"),
+        "extension_available": extension_plan.get("extension_available"),
+        "extension_trading_day_count": extension_plan.get("extension_trading_day_count"),
+        "holdout_status_check": status,
+    }
+    return HarnessResult(
+        status=status,
+        summary=summary,
+        details={
+            "maturity": maturity,
+            "extension_plan": extension_plan,
         },
     )
 
@@ -334,28 +366,35 @@ def _annotation_future_availability_violations(db_path: str | Path, dataset_id: 
     metadata = training.metadata.copy()
     metadata["trading_date_parsed"] = pd.to_datetime(metadata["trading_date"]).dt.date
     metadata["as_of_parsed"] = pd.to_datetime(metadata["as_of_timestamp"], utc=True, errors="coerce")
-    derived = derive_annotation_features(db_path, metadata)
+    annotations = annotations.copy()
+    annotations["event_date_parsed"] = pd.to_datetime(annotations["event_date"], errors="coerce").dt.date
+    annotations["available_at_parsed"] = pd.to_datetime(annotations["available_at"], utc=True, errors="coerce")
     violations: list[dict[str, Any]] = []
     for ticker, group in annotations.groupby("ticker", dropna=False):
         ticker = str(ticker).upper()
-        event_dates = pd.to_datetime(group["event_date"], errors="coerce").dt.date.dropna()
-        available_times = pd.to_datetime(group["available_at"], utc=True, errors="coerce").dropna()
+        event_dates = group["event_date_parsed"].dropna()
+        available_times = group["available_at_parsed"].dropna()
         if event_dates.empty or available_times.empty:
             continue
         earliest_event_date = min(event_dates)
         earliest_available = min(available_times)
-        mask = (
+        pre_availability = metadata[
             metadata["ticker"].astype(str).str.upper().eq(ticker)
             & ((metadata["trading_date_parsed"] < earliest_event_date) | (metadata["as_of_parsed"] < earliest_available))
-        )
-        active = pd.to_numeric(derived.loc[mask, "annotation_coverage_available"], errors="coerce").fillna(0).gt(0)
-        if bool(active.any()):
+        ]
+        if pre_availability.empty:
+            continue
+        pre_active = group[
+            group["event_date_parsed"].le(pre_availability["trading_date_parsed"].max())
+            & group["available_at_parsed"].le(pre_availability["as_of_parsed"].max())
+        ]
+        if not pre_active.empty:
             violations.append(
                 {
                     "ticker": ticker,
                     "earliest_event_date": str(earliest_event_date),
                     "earliest_available_at": str(earliest_available),
-                    "pre_availability_active_rows": int(active.sum()),
+                    "pre_availability_annotation_rows": int(len(pre_active)),
                 }
             )
     return violations

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from src.annotations.news_events import (
     stable_text_hash,
 )
 from src.annotations.repository import insert_annotation
+from src.annotations.source_quality import classify_event_quality, enrich_quality_frame, quality_distribution
 from src.data import storage
 
 
@@ -253,6 +255,7 @@ def list_candidates(
     if not frame.empty:
         frame["tags"] = frame["tags_json"].map(lambda value: json_loads(value, []))
         frame["provider_metadata"] = frame["provider_metadata_json"].map(lambda value: json_loads(value, {}))
+        frame = enrich_quality_frame(frame)
     return frame
 
 
@@ -303,6 +306,13 @@ def reject_candidate(db_path: str | Path, candidate_id: int, reason: str | None 
 
 
 def _candidate_to_annotation(candidate: ResearchEventAnnotationCandidate) -> ResearchEventAnnotation:
+    quality = classify_event_quality(asdict(candidate))
+    quality_tags = [
+        f"source_quality:{quality.source_quality}",
+        f"informativeness:{quality.informativeness}",
+    ]
+    if quality.duplicate_theme_key:
+        quality_tags.append(f"duplicate_theme_key:{quality.duplicate_theme_key}")
     return ResearchEventAnnotation(
         ticker=candidate.ticker,
         event_date=candidate.event_date,
@@ -316,7 +326,7 @@ def _candidate_to_annotation(candidate: ResearchEventAnnotationCandidate) -> Res
         title=candidate.title,
         summary=candidate.summary,
         evidence_text=candidate.evidence_text,
-        tags=normalize_tags([*candidate.tags, "candidate_import"]),
+        tags=normalize_tags([*candidate.tags, "candidate_import", *quality_tags]),
     )
 
 
@@ -372,9 +382,12 @@ def build_candidate_ingestion_artifact(db_path: str | Path) -> dict[str, Any]:
             "by_event_type": [],
             "by_sentiment": [],
             "by_source": [],
+            "source_quality_distribution": [],
+            "informativeness_distribution": [],
             "scanner_scoring_effect": 0,
             "research_only": True,
         }
+    quality = quality_distribution(candidates)
     return {
         "artifact_type": "news_event_candidate_ingestion",
         "created_at": _now_iso(),
@@ -383,6 +396,9 @@ def build_candidate_ingestion_artifact(db_path: str | Path) -> dict[str, Any]:
         "by_event_type": candidates.groupby("event_type").size().reset_index(name="count").sort_values("event_type").to_dict("records"),
         "by_sentiment": candidates.groupby("sentiment_label").size().reset_index(name="count").sort_values("sentiment_label").to_dict("records"),
         "by_source": candidates.groupby("source").size().reset_index(name="count").sort_values("source").to_dict("records"),
+        "source_quality_distribution": quality["source_quality_distribution"],
+        "informativeness_distribution": quality["informativeness_distribution"],
+        "quality_summary": quality,
         "duplicates": candidates[candidates["status"].eq("duplicate")][
             [
                 "candidate_id",
@@ -398,4 +414,3 @@ def build_candidate_ingestion_artifact(db_path: str | Path) -> dict[str, Any]:
         "scanner_scoring_effect": 0,
         "research_only": True,
     }
-

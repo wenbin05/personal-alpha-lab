@@ -21,7 +21,7 @@ from src.quality.harness import (
 )
 
 
-def _seed_dataset(db_path, *, leak_label: bool = False) -> int:
+def _seed_dataset(db_path, *, leak_label: bool = False, periods: int = 45) -> int:
     feature_columns = ["ret_5d", "market_regime"]
     if leak_label:
         feature_columns.append("label_5_session_excess_return")
@@ -44,7 +44,7 @@ def _seed_dataset(db_path, *, leak_label: bool = False) -> int:
         ticker_universe=["AAA", "BBB"],
         feature_columns=feature_columns,
         label_definitions={"5_session": {"target": "excess_return"}},
-        row_count=90,
+        row_count=periods * 2,
         data_hash="quality_hash",
         audit_columns=["raw_annotation_count"],
         label_columns=["label_5_session_excess_return"],
@@ -53,7 +53,7 @@ def _seed_dataset(db_path, *, leak_label: bool = False) -> int:
         feature_manifest=feature_manifest,
     )
     dataset_id = insert_dataset_build(db_path, build)
-    dates = [pd.Timestamp(value).date() for value in pd.bdate_range("2024-01-02", periods=45)]
+    dates = [pd.Timestamp(value).date() for value in pd.bdate_range("2024-01-02", periods=periods)]
     snapshots: list[FeatureSnapshot] = []
     for ticker in ["AAA", "BBB"]:
         for idx, trading_date in enumerate(dates):
@@ -187,6 +187,18 @@ def test_annotation_coverage_check_detects_zero_and_active_coverage(tmp_path) ->
     assert covered.summary["future_availability_violation_count"] == 0
 
 
+def test_annotation_coverage_check_handles_tiny_holdout_candidate(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    dataset_id = _seed_dataset(db_path, periods=4)
+
+    result = check_annotation_coverage(db_path, dataset_id)
+
+    assert result.status == "passed"
+    assert result.summary["fold_density_status"] == "unavailable"
+    assert result.summary["labeled_row_count"] == 8
+    assert "Not enough labeled dates" in result.details["warnings"][0]
+
+
 def test_final_report_helper_outputs_expected_markdown() -> None:
     report = build_final_report(
         runtime_status="ok",
@@ -201,4 +213,3 @@ def test_final_report_helper_outputs_expected_markdown() -> None:
     markdown = report_markdown(report)
     assert "Runtime status: ok" in markdown
     assert "src/quality/harness.py" in markdown
-

@@ -12,6 +12,7 @@ python scripts/quality_harness.py scanner-compare --before data/processed/scanne
 python scripts/quality_harness.py dataset-check --dataset-id 49
 python scripts/quality_harness.py model-compare --model-run-id 247 --baseline-run-id 145
 python scripts/quality_harness.py annotation-coverage --dataset-id 49
+python scripts/quality_harness.py holdout-status --dataset-id 50
 python scripts/quality_harness.py health-check
 python scripts/quality_harness.py annotation-template-path
 ```
@@ -22,7 +23,7 @@ python scripts/quality_harness.py annotation-template-path
 - Scanner comparison reports score, label, risk, and catalyst-score changes.
 - Dataset checks confirm labels, audit columns, identifiers, and metadata are excluded from model features.
 - Model comparison uses persisted final-test metrics only.
-- Annotation coverage uses point-in-time Dataset 49 rows and detects zero-coverage features and coarse future-availability violations.
+- Annotation coverage uses point-in-time Dataset 49 rows and detects zero-coverage features, source-quality/informativeness distributions, low-specificity neutral rows, routine SEC-heavy rows, material non-SEC rows, and coarse future-availability violations.
+- Holdout status reports label coverage, promotion gates, and cache-only extension availability; an immature holdout candidate is expected to return a successful command status when manifest/leakage checks pass.
 - The annotation template at `docs/templates/research_annotations_template.csv` contains synthetic demo rows only. Do not import it into production data unless explicitly requested.
 - The Streamlit health check verifies `http://localhost:8501/_stcore/health` and does not stop or restart the server.
-

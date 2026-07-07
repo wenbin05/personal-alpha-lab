@@ -15,6 +15,7 @@ from src.quality.harness import (
     build_final_report,
     check_annotation_coverage,
     check_dataset_manifest,
+    check_holdout_status,
     compare_model_run_to_baseline,
     compare_scanner_snapshots,
     latest_scan_snapshot,
@@ -100,6 +101,15 @@ def annotation_coverage(args: argparse.Namespace) -> int:
     return 0 if result.status == "passed" else 2
 
 
+def holdout_status(args: argparse.Namespace) -> int:
+    result = check_holdout_status(_db_path(args.db), dataset_id=args.dataset_id)
+    payload = {"status": result.status, "summary": result.summary, "details": result.details}
+    if args.output:
+        write_json_artifact(args.output, payload)
+    _print_result(payload)
+    return 0 if result.status == "passed" else 2
+
+
 def health_check(args: argparse.Namespace) -> int:
     result = streamlit_health_check(args.url, timeout_seconds=args.timeout)
     payload = {"status": result.status, "summary": result.summary, "details": result.details}
@@ -172,6 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--output")
     cmd.set_defaults(func=annotation_coverage)
 
+    cmd = sub.add_parser("holdout-status", help="Report holdout maturity, promotion gates, and cache-only extension availability.")
+    cmd.add_argument("--dataset-id", type=int, required=True)
+    cmd.add_argument("--output")
+    cmd.set_defaults(func=holdout_status)
+
     cmd = sub.add_parser("health-check", help="Check Streamlit health endpoint without stopping the server.")
     cmd.add_argument("--url", default="http://localhost:8501/_stcore/health")
     cmd.add_argument("--timeout", type=float, default=5.0)
@@ -204,4 +219,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

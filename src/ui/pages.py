@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -20,6 +21,7 @@ from src.annotations.news_repository import (
     stage_candidates,
 )
 from src.annotations.repository import annotation_counts_by_ticker, bulk_insert_annotations, insert_annotation, list_annotations
+from src.annotations.source_quality import enrich_quality_frame, quality_distribution
 from src.alerts.alert_formatter import format_alert, suggested_watch_action
 from src.backtest.simple_backtester import (
     backtest_mean_reversion_strategy,
@@ -176,6 +178,8 @@ from src.modeling.diagnostics import (
     load_diagnostics_artifact,
     write_diagnostics_artifact,
 )
+from src.modeling.evaluation_regime import get_dataset_evaluation_regime
+from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
 from src.modeling.repository import (
     list_model_final_metrics,
     list_model_fold_metrics,
@@ -1921,6 +1925,65 @@ def ticker_research_page(settings: Settings) -> None:
                 st.error(str(exc))
 
 
+def _render_dataset_evaluation_regime(db_path: Path, dataset_id: int) -> None:
+    try:
+        regime = get_dataset_evaluation_regime(db_path, int(dataset_id))
+    except Exception as exc:
+        st.warning(f"Could not load dataset evaluation regime metadata: {exc}")
+        return
+    if not regime:
+        st.info("Evaluation regime: unclassified. Treat this dataset as exploratory until a regime is explicitly assigned.")
+        return
+
+    label = str(regime.get("evaluation_regime") or "unclassified")
+    strategy = str(regime.get("strategy") or "n/a")
+    rationale = str(regime.get("rationale") or "")
+    parent = regime.get("parent_dataset_id")
+    message = f"Evaluation regime: `{label}` | strategy: `{strategy}`"
+    if parent is not None:
+        message += f" | parent dataset: `{parent}`"
+
+    if label == "final_holdout":
+        st.error(f"{message}. Do not repeatedly evaluate or tune against this dataset.")
+    elif label == "holdout_candidate":
+        st.warning(f"{message}. Use for protocol validation only until promoted under the holdout workflow.")
+    elif label == "exploratory_dev":
+        st.warning(f"{message}. Results on this dataset are exploratory/dev evidence, not final robustness proof.")
+    else:
+        st.info(message)
+    if rationale:
+        st.caption(rationale)
+
+    try:
+        maturity = assess_holdout_maturity(db_path, int(dataset_id))
+        extension = build_holdout_extension_plan(db_path, int(dataset_id))
+    except Exception as exc:
+        st.caption(f"Holdout maturity status unavailable: {exc}")
+        return
+
+    labels = maturity.get("label_coverage", {})
+    five = labels.get("5_session", {})
+    twenty = labels.get("20_session", {})
+    readiness = maturity.get("readiness", {})
+    sanity_ready = bool(readiness.get("holdout_candidate_sanity_check", {}).get("ready"))
+    final_ready = bool(readiness.get("final_holdout_evaluation_5_session", {}).get("ready"))
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("5S labels", int(five.get("label_count", 0) or 0))
+    m2.metric("5S coverage", f"{float(five.get('label_coverage_pct', 0) or 0) * 100:.1f}%")
+    m3.metric("20S labels", int(twenty.get("label_count", 0) or 0))
+    m4.metric("Extension days", int(extension.get("extension_trading_day_count", 0) or 0))
+    if label == "holdout_candidate":
+        if final_ready:
+            st.success("Holdout candidate passes 5-session final maturity gates, but promotion still requires explicit confirmation.")
+        elif sanity_ready:
+            st.info("Holdout candidate is mature enough for sanity checks, but not final-holdout evaluation.")
+        else:
+            blockers = readiness.get("holdout_candidate_sanity_check", {}).get("blockers", [])
+            st.warning("Holdout candidate is immature; model evaluation remains blocked.")
+            if blockers:
+                st.caption("Primary blocker: " + str(blockers[0]))
+
+
 def dataset_lab_page(settings: Settings) -> None:
     st.header("Dataset Lab")
     st.caption(
@@ -2295,6 +2358,7 @@ def dataset_lab_page(settings: Settings) -> None:
             index=0,
             format_func=lambda value: f"Dataset #{value}",
         )
+        _render_dataset_evaluation_regime(settings.database_file, int(selected_dataset_id))
 
     frame = st.session_state.get("dataset_lab_latest_frame")
     dataset_id = st.session_state.get("dataset_lab_latest_dataset_id")
@@ -2509,6 +2573,7 @@ def model_lab_page(settings: Settings) -> None:
         f"Dataset {dataset_id}: {int(selected_build['row_count'])} rows, hash {str(selected_build['data_hash'])[:12]}..., "
         f"version {selected_build['version']}"
     )
+    _render_dataset_evaluation_regime(settings.database_file, dataset_id)
     st.json(
         {
             "selected_target": target_metadata(target_definition),
@@ -2921,6 +2986,23 @@ def model_lab_page(settings: Settings) -> None:
             if candidate_frame.empty:
                 st.info("No news/event candidates found for this filter.")
             else:
+                candidate_quality = quality_distribution(candidate_frame)
+                q1, q2, q3 = st.columns(3)
+                q1.metric("Low-specificity neutral", int(candidate_quality.get("low_specificity_neutral_count", 0)))
+                q2.metric("Routine SEC-heavy", int(candidate_quality.get("routine_sec_heavy_count", 0)))
+                q3.metric("Material non-SEC", int(candidate_quality.get("material_non_sec_count", 0)))
+                with st.expander("Candidate source-quality summary", expanded=False):
+                    cqa, cqb = st.columns(2)
+                    cqa.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(candidate_quality.get("source_quality_distribution", []))),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    cqb.dataframe(
+                        dataframe_for_streamlit(pd.DataFrame(candidate_quality.get("informativeness_distribution", []))),
+                        width="stretch",
+                        hide_index=True,
+                    )
                 candidate_cols = [
                     "candidate_id",
                     "status",
@@ -2932,6 +3014,8 @@ def model_lab_page(settings: Settings) -> None:
                     "strength",
                     "confidence",
                     "source",
+                    "source_quality",
+                    "informativeness",
                     "title",
                     "duplicate_reason",
                     "imported_annotation_id",
@@ -2963,6 +3047,10 @@ def model_lab_page(settings: Settings) -> None:
                                 "event_type": selected_candidate.get("event_type"),
                                 "sentiment_label": selected_candidate.get("sentiment_label"),
                                 "source_url": selected_candidate.get("source_url"),
+                                "source_quality": selected_candidate.get("source_quality"),
+                                "informativeness": selected_candidate.get("informativeness"),
+                                "quality_reason": selected_candidate.get("quality_reason"),
+                                "duplicate_theme_key": selected_candidate.get("duplicate_theme_key"),
                                 "summary": selected_candidate.get("summary"),
                                 "evidence_text": selected_candidate.get("evidence_text"),
                                 "provider_metadata": selected_candidate.get("provider_metadata"),
@@ -3061,6 +3149,12 @@ def model_lab_page(settings: Settings) -> None:
             if recent_annotations.empty:
                 st.info("No research-only annotations stored yet.")
             else:
+                recent_annotations = enrich_quality_frame(recent_annotations)
+                annotation_quality = quality_distribution(recent_annotations)
+                aq1, aq2, aq3 = st.columns(3)
+                aq1.metric("Low-specificity neutral", int(annotation_quality.get("low_specificity_neutral_count", 0)))
+                aq2.metric("Routine SEC-heavy", int(annotation_quality.get("routine_sec_heavy_count", 0)))
+                aq3.metric("Material non-SEC", int(annotation_quality.get("material_non_sec_count", 0)))
                 display_cols = [
                     "annotation_id",
                     "ticker",
@@ -3071,6 +3165,8 @@ def model_lab_page(settings: Settings) -> None:
                     "strength",
                     "confidence",
                     "source",
+                    "source_quality",
+                    "informativeness",
                     "title",
                     "research_only",
                     "scanner_scoring_effect",
