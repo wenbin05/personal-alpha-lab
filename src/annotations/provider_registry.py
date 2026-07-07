@@ -6,12 +6,17 @@ from typing import Any, Protocol
 
 import pandas as pd
 
-from src.annotations.news_csv_provider import parse_candidate_import_frame
+from src.annotations.news_csv_provider import (
+    COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME,
+    parse_candidate_import_frame,
+    parse_company_ir_press_release_frame,
+)
 from src.annotations.news_events import ResearchEventAnnotationCandidate
 
 
 PROVIDER_REGISTRY_VERSION = "research_event_provider_registry_v1"
 MANUAL_CSV_PROVIDER_NAME = "manual_csv"
+COMPANY_IR_PROVIDER_NAME = COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME
 RSS_MANUAL_URL_PROVIDER_NAME = "rss_manual_url_stub"
 REDDIT_PROVIDER_NAME = "reddit_api_placeholder"
 
@@ -149,6 +154,50 @@ class ManualCsvResearchEventProvider(BaseResearchEventProvider):
         return result.candidates[0]
 
 
+class CompanyIrPressReleaseResearchEventProvider(BaseResearchEventProvider):
+    def __init__(self, frame: pd.DataFrame | None = None) -> None:
+        self.frame = frame
+        self.config = ResearchEventProviderConfig(
+            provider_name=COMPANY_IR_PROVIDER_NAME,
+            provider_type="company_ir_press_release",
+            enabled=True,
+            requires_api_key=False,
+            rate_limit_notes="No provider rate limit; user supplies CSV rows or source URLs. No network calls are made.",
+            compliance_notes=(
+                "Strict user-supplied company IR / press-release workflow. Requires source_url, stages candidates "
+                "for review, imports accepted rows only as research-only annotations, and never crawls or discovers sites."
+            ),
+            supports_point_in_time_available_at=True,
+            supports_backfill=True,
+            source_quality_default="official_company",
+            allowed_usage="User-supplied company IR/newsroom/press-release rows only.",
+            config_status="ready_local_only",
+            next_action_required=(
+                "Upload a company IR / press-release candidate CSV with source_url values, then review staged rows."
+            ),
+            network_calls_enabled=False,
+        )
+
+    def fetch_candidates(self, ticker: str, start_date: date, end_date: date) -> list[ResearchEventAnnotationCandidate]:
+        if self.frame is None:
+            return []
+        result = parse_company_ir_press_release_frame(self.frame)
+        ticker_upper = ticker.strip().upper()
+        return [
+            candidate
+            for candidate in result.candidates
+            if candidate.ticker == ticker_upper and start_date <= candidate.event_date <= end_date
+        ]
+
+    def normalize_candidate(self, raw_item: Any) -> ResearchEventAnnotationCandidate:
+        frame = pd.DataFrame([raw_item])
+        result = parse_company_ir_press_release_frame(frame)
+        if result.errors or not result.candidates:
+            message = "; ".join(error.message for error in result.errors) or "Company IR row could not be normalized."
+            raise ValueError(message)
+        return result.candidates[0]
+
+
 class DisabledRssManualUrlProvider(BaseResearchEventProvider):
     def __init__(self) -> None:
         self.config = ResearchEventProviderConfig(
@@ -198,6 +247,7 @@ class DisabledRedditApiProvider(BaseResearchEventProvider):
 def default_provider_registry() -> list[ResearchEventSourceProvider]:
     return [
         ManualCsvResearchEventProvider(),
+        CompanyIrPressReleaseResearchEventProvider(),
         DisabledRssManualUrlProvider(),
         DisabledRedditApiProvider(),
     ]

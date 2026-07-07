@@ -35,6 +35,10 @@ Use:
 
 `docs/templates/news_event_candidates_template.csv`
 
+For the strict company IR / press-release provider, use:
+
+`docs/templates/company_ir_press_release_candidates_template.csv`
+
 Required columns:
 
 - `ticker`
@@ -80,6 +84,18 @@ Event-informativeness labels:
 - `low_specificity`
 
 If these fields are omitted, the app infers them conservatively from source, source URL, event type, sentiment, strength, confidence, tags, and text specificity. Inferred labels are audit metadata only unless a future phase explicitly promotes them into model-facing features.
+
+## Strict Company IR / Press-Release Provider
+
+The `company_ir_press_release` provider is local-only and accepts only user-supplied CSV rows or user-supplied URLs embedded in CSV rows. It does not fetch URLs, crawl websites, discover company pages, or import rows automatically.
+
+Additional rules:
+
+- `source_url` is required and must be an `http` or `https` URL.
+- `provider_name` must be omitted or set to `company_ir_press_release`.
+- `source_quality` must be omitted or set to `official_company`; omitted values are defaulted to `official_company` and surfaced as a warning for reviewer verification.
+- rows are staged as candidates and must be accepted before they can be imported as research-only annotations.
+- accepted rows import only into `research_event_annotations` with `research_only = true` and `scanner_scoring_effect = 0`.
 
 ## Deduplication
 

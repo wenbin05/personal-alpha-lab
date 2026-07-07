@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time
 from typing import Any
 
@@ -12,6 +12,7 @@ from src.annotations.news_events import NewsEventProvider, ResearchEventAnnotati
 
 
 MANUAL_CSV_PROVIDER_NAME = "manual_csv"
+COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME = "company_ir_press_release"
 
 
 REQUIRED_CANDIDATE_COLUMNS = {"ticker", "event_date", "title"}
@@ -200,6 +201,82 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = MANUAL_CSV
     return CandidateImportResult(candidates=candidates, errors=errors, warnings=warnings)
 
 
+def parse_company_ir_press_release_frame(frame: pd.DataFrame) -> CandidateImportResult:
+    """Parse strict user-supplied company IR / press-release candidates.
+
+    This provider is local-only: it accepts CSV rows supplied by the user, requires a source URL,
+    makes no network calls, and stages rows for review instead of importing annotations directly.
+    """
+    result = parse_candidate_import_frame(frame, provider=COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME)
+    if result.errors:
+        return result
+
+    candidates: list[ResearchEventAnnotationCandidate] = []
+    errors: list[CandidateImportError] = []
+    warnings: list[CandidateImportWarning] = list(result.warnings)
+    for candidate in result.candidates:
+        metadata = dict(candidate.provider_metadata or {})
+        row_number = int(metadata.get("csv_row_number") or 0)
+        source_quality = str(metadata.get("source_quality") or "").strip().lower()
+        if candidate.provider != COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME:
+            errors.append(
+                CandidateImportError(
+                    row_number=row_number,
+                    message=(
+                        "company_ir_press_release rows must omit provider_name or set provider_name "
+                        "to company_ir_press_release."
+                    ),
+                )
+            )
+            continue
+        if not candidate.source_url:
+            errors.append(CandidateImportError(row_number=row_number, message="source_url is required for company IR candidates."))
+            continue
+        source_url = str(candidate.source_url).strip()
+        if not source_url.lower().startswith(("https://", "http://")):
+            errors.append(CandidateImportError(row_number=row_number, message="source_url must be an http(s) URL."))
+            continue
+        if source_quality and source_quality != "official_company":
+            errors.append(
+                CandidateImportError(
+                    row_number=row_number,
+                    message="company_ir_press_release rows must use source_quality=official_company.",
+                )
+            )
+            continue
+
+        metadata["provider_name"] = COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME
+        metadata["provider_type"] = "company_ir_press_release"
+        metadata["source_quality"] = "official_company"
+        metadata["network_calls_would_occur"] = False
+        metadata.setdefault("allowed_usage", "user_supplied_company_ir_press_release_csv")
+        metadata.setdefault("review_note", "Verify the user-supplied company IR / press-release source before import.")
+        tags = normalize_tags(
+            [
+                *candidate.tags,
+                "source_quality:official_company",
+                "provider:company_ir_press_release",
+            ]
+        )
+        candidates.append(
+            replace(
+                candidate,
+                provider=COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME,
+                provider_metadata=metadata,
+                tags=tags,
+            )
+        )
+        if not source_quality:
+            warnings.append(
+                CandidateImportWarning(
+                    row_number=row_number,
+                    message="source_quality defaulted to official_company for the strict company IR provider.",
+                )
+            )
+
+    return CandidateImportResult(candidates=candidates, errors=errors, warnings=warnings)
+
+
 class CsvManualNewsEventProvider:
     provider_name = MANUAL_CSV_PROVIDER_NAME
 
@@ -208,6 +285,22 @@ class CsvManualNewsEventProvider:
 
     def get_events(self, ticker: str, start_date: date, end_date: date) -> list[ResearchEventAnnotationCandidate]:
         result = parse_candidate_import_frame(self.frame, provider=self.provider_name)
+        ticker_upper = ticker.strip().upper()
+        return [
+            candidate
+            for candidate in result.candidates
+            if candidate.ticker == ticker_upper and start_date <= candidate.event_date <= end_date
+        ]
+
+
+class CompanyIrPressReleaseProvider:
+    provider_name = COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME
+
+    def __init__(self, frame: pd.DataFrame):
+        self.frame = frame
+
+    def get_events(self, ticker: str, start_date: date, end_date: date) -> list[ResearchEventAnnotationCandidate]:
+        result = parse_company_ir_press_release_frame(self.frame)
         ticker_upper = ticker.strip().upper()
         return [
             candidate

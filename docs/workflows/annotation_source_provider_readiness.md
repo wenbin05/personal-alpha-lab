@@ -58,6 +58,7 @@ The common provider interface is:
 Current registry state:
 
 - `manual_csv`: enabled, local CSV/manual staging only, no API key, no network calls.
+- `company_ir_press_release`: enabled, strict user-supplied company IR/newsroom/press-release CSV rows only, source URL required, no network calls.
 - `rss_manual_url_stub`: disabled placeholder; future user-supplied RSS/manual URLs only, no crawling.
 - `reddit_api_placeholder`: disabled placeholder; official API access required, no scraping.
 

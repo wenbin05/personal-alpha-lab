@@ -30,6 +30,7 @@ SOURCE_QUALITY_VERSION = "source_quality_v1"
 
 SOURCE_QUALITY_ALIASES = {
     "company_ir": "official_company",
+    "company_ir_press_release": "official_company",
     "company_newsroom": "official_company",
     "investor_relations": "official_company",
     "official_regulator": "regulator",

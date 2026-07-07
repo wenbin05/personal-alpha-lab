@@ -10,7 +10,7 @@ import streamlit as st
 
 from src.annotations.csv_import import parse_annotation_import_frame
 from src.annotations.models import ANNOTATION_EVENT_TYPES, ANNOTATION_SENTIMENT_LABELS, ResearchEventAnnotation
-from src.annotations.news_csv_provider import parse_candidate_import_frame
+from src.annotations.news_csv_provider import parse_candidate_import_frame, parse_company_ir_press_release_frame
 from src.annotations.news_repository import (
     accept_candidate,
     build_candidate_ingestion_artifact,
@@ -3001,6 +3001,46 @@ def model_lab_page(settings: Settings) -> None:
                         st.dataframe(pd.DataFrame([item.__dict__ for item in candidate_result.warnings]), width="stretch", hide_index=True)
                 except Exception as exc:
                     st.error(f"Candidate staging failed: {exc}")
+
+            st.divider()
+            st.write("Strict company IR / press-release provider")
+            st.caption(
+                "Upload only user-supplied company IR, newsroom, or press-release rows. This path requires source_url, "
+                "does not fetch URLs, does not crawl, and stages candidates for review only."
+            )
+            ir_upload = st.file_uploader(
+                "Upload company IR / press-release candidate CSV",
+                type=["csv"],
+                key="company_ir_candidate_csv_upload",
+            )
+            ir_confirm = st.checkbox(
+                "I confirm these are user-supplied company IR / press-release rows and no website discovery should occur.",
+                key="company_ir_candidate_stage_confirm",
+            )
+            if ir_upload is not None and ir_confirm and st.button("Stage Company IR Candidates", key="company_ir_candidate_stage_button"):
+                try:
+                    ir_frame = pd.read_csv(ir_upload)
+                    ir_result = parse_company_ir_press_release_frame(ir_frame)
+                    staged = stage_candidates(settings.database_file, ir_result.candidates)
+                    staged_count = sum(1 for item in staged if item.inserted and item.status == "staged")
+                    duplicate_count = sum(1 for item in staged if item.status == "duplicate")
+                    existing_count = sum(1 for item in staged if not item.inserted)
+                    artifact = build_candidate_ingestion_artifact(settings.database_file)
+                    artifact_path = annotation_dir / f"company_ir_candidate_ingestion_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
+                    artifact_path.write_text(json.dumps(artifact, indent=2, default=str), encoding="utf-8")
+                    st.success(
+                        f"Staged {staged_count} company IR candidate(s); marked {duplicate_count} duplicate(s); "
+                        f"skipped {existing_count} existing staged row(s)."
+                    )
+                    st.caption(f"Company IR candidate artifact saved: {artifact_path.name}")
+                    if ir_result.errors:
+                        st.warning(f"{len(ir_result.errors)} CSV rows were rejected.")
+                        st.dataframe(pd.DataFrame([item.__dict__ for item in ir_result.errors]), width="stretch", hide_index=True)
+                    if ir_result.warnings:
+                        st.info(f"{len(ir_result.warnings)} CSV warnings.")
+                        st.dataframe(pd.DataFrame([item.__dict__ for item in ir_result.warnings]), width="stretch", hide_index=True)
+                except Exception as exc:
+                    st.error(f"Company IR candidate staging failed: {exc}")
 
             status_counts = candidate_counts_by_status(settings.database_file)
             if not status_counts.empty:
