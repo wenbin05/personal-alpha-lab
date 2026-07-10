@@ -2,6 +2,8 @@
 
 Use this file as durable project context for future Codex work. Keep changes small, auditable, and aligned with the existing modular Python/Streamlit architecture.
 
+Before beginning a new phase, read `docs/research/current_state_handoff.md` and inspect only the additional files needed for that phase.
+
 ## Project Guardrails
 
 - This project is for personal U.S. equities research and paper trading only.
