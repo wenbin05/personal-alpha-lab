@@ -4,6 +4,8 @@ Use this file as durable project context for future Codex work. Keep changes sma
 
 Before beginning a new phase, read `docs/research/current_state_handoff.md` and inspect only the additional files needed for that phase.
 
+Follow `docs/workflows/token_efficient_execution_workflow.md` and use the lowest validation tier that safely matches the task.
+
 ## Project Guardrails
 
 - This project is for personal U.S. equities research and paper trading only.
