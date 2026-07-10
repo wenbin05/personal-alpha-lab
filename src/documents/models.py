@@ -10,12 +10,20 @@ DocumentType = Literal[
     "sec_filing",
     "news_article",
     "earnings_transcript",
+    "company_ir_press_release",
     "manual_text",
     "imported_csv",
     "other",
 ]
 
-DocumentSource = Literal["SEC", "manual", "csv_import", "provider_placeholder", "other"]
+DocumentSource = Literal[
+    "SEC",
+    "manual",
+    "csv_import",
+    "company_ir_press_release",
+    "provider_placeholder",
+    "other",
+]
 
 ParsingStatus = Literal["success", "failed", "partial", "not_attempted"]
 
@@ -23,12 +31,13 @@ DOCUMENT_TYPES = [
     "sec_filing",
     "news_article",
     "earnings_transcript",
+    "company_ir_press_release",
     "manual_text",
     "imported_csv",
     "other",
 ]
 
-DOCUMENT_SOURCES = ["SEC", "manual", "csv_import", "provider_placeholder", "other"]
+DOCUMENT_SOURCES = ["SEC", "manual", "csv_import", "company_ir_press_release", "provider_placeholder", "other"]
 
 PARSING_STATUSES = ["success", "failed", "partial", "not_attempted"]
 
@@ -79,4 +88,3 @@ class SourceDocument(BaseModel):
     @classmethod
     def normalize_text_fields(cls, value: str | None) -> str:
         return (value or "").strip()
-

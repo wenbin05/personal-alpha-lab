@@ -135,7 +135,7 @@ def init_db(db_path: str | Path) -> None:
                 published_at TEXT,
                 raw_text TEXT,
                 cleaned_text TEXT,
-                text_hash TEXT NOT NULL UNIQUE,
+                text_hash TEXT NOT NULL,
                 parsing_status TEXT NOT NULL,
                 warnings TEXT,
                 created_at TEXT NOT NULL,
@@ -151,6 +151,18 @@ def init_db(db_path: str | Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_source_documents_source_url
                 ON source_documents (source_url);
+
+            CREATE INDEX IF NOT EXISTS idx_source_documents_ticker_source_url
+                ON source_documents (ticker, source_url);
+
+            CREATE INDEX IF NOT EXISTS idx_source_documents_ticker_hash
+                ON source_documents (ticker, text_hash);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_source_documents_unique_ticker_hash
+                ON source_documents (ticker, text_hash);
+
+            CREATE INDEX IF NOT EXISTS idx_source_documents_ticker_title_date
+                ON source_documents (ticker, title, published_at);
 
             CREATE TABLE IF NOT EXISTS llm_extractions (
                 extraction_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -510,7 +522,12 @@ def init_db(db_path: str | Path) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 reviewed_at TEXT,
-                imported_annotation_id INTEGER
+                imported_annotation_id INTEGER,
+                source_document_id INTEGER,
+                document_type TEXT,
+                published_at TEXT,
+                raw_text TEXT,
+                cleaned_text TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_research_event_candidates_status
@@ -723,6 +740,7 @@ def init_db(db_path: str | Path) -> None:
                 ON model_predictions (snapshot_id);
             """
         )
+        _migrate_source_document_hash_scope(conn)
         _ensure_column(conn, "llm_extractions", "document_relevance", "TEXT NOT NULL DEFAULT 'unknown'")
         _ensure_column(conn, "llm_extractions", "evidence_sufficiency", "TEXT NOT NULL DEFAULT 'unknown'")
         _ensure_column(conn, "catalyst_proposals", "initiated_by", "TEXT NOT NULL DEFAULT 'local_user'")
@@ -733,6 +751,30 @@ def init_db(db_path: str | Path) -> None:
         _ensure_column(conn, "dataset_builds", "identifier_columns_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "dataset_builds", "metadata_columns_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "dataset_builds", "feature_manifest_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "research_event_annotations", "source_document_id", "INTEGER")
+        _ensure_column(conn, "research_event_candidates", "source_document_id", "INTEGER")
+        _ensure_column(conn, "research_event_candidates", "document_type", "TEXT")
+        _ensure_column(conn, "research_event_candidates", "published_at", "TEXT")
+        _ensure_column(conn, "research_event_candidates", "raw_text", "TEXT")
+        _ensure_column(conn, "research_event_candidates", "cleaned_text", "TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_research_event_candidates_document ON research_event_candidates (source_document_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_research_event_annotations_document ON research_event_annotations (source_document_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_documents_ticker_source_url ON source_documents (ticker, source_url)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_source_documents_ticker_hash ON source_documents (ticker, text_hash)")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_documents_unique_ticker_hash "
+            "ON source_documents (ticker, text_hash)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_documents_ticker_title_date "
+            "ON source_documents (ticker, title, published_at)"
+        )
         conn.execute("UPDATE catalysts SET available_at = created_at WHERE available_at IS NULL OR available_at = ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_catalysts_available ON catalysts (ticker, available_at)")
 
@@ -741,6 +783,51 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _migrate_source_document_hash_scope(conn: sqlite3.Connection) -> None:
+    """Replace the legacy global text-hash uniqueness with ticker-scoped uniqueness."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'source_documents'"
+    ).fetchone()
+    table_sql = str(row["sql"] or "") if row is not None else ""
+    if "TEXT_HASH TEXT NOT NULL UNIQUE" not in " ".join(table_sql.upper().split()):
+        return
+
+    columns = (
+        "document_id, ticker, catalyst_id, document_type, source, source_url, accession_number, "
+        "filing_type, title, published_at, raw_text, cleaned_text, text_hash, parsing_status, warnings, "
+        "created_at, updated_at, raw_payload_json"
+    )
+    conn.execute("ALTER TABLE source_documents RENAME TO source_documents_legacy_hash_scope")
+    conn.execute(
+        """
+        CREATE TABLE source_documents (
+            document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            catalyst_id INTEGER,
+            document_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_url TEXT,
+            accession_number TEXT,
+            filing_type TEXT,
+            title TEXT NOT NULL,
+            published_at TEXT,
+            raw_text TEXT,
+            cleaned_text TEXT,
+            text_hash TEXT NOT NULL,
+            parsing_status TEXT NOT NULL,
+            warnings TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            raw_payload_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        f"INSERT INTO source_documents ({columns}) SELECT {columns} FROM source_documents_legacy_hash_scope"
+    )
+    conn.execute("DROP TABLE source_documents_legacy_hash_scope")
 
 
 def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:

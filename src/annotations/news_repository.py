@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,10 @@ from src.annotations.news_events import (
 from src.annotations.repository import insert_annotation
 from src.annotations.source_quality import classify_event_quality, enrich_quality_frame, quality_distribution
 from src.data import storage
+from src.documents.repository import build_source_document, insert_document_with_result
+
+
+COMPANY_IR_DOCUMENT_PROVIDER = "company_ir_press_release"
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,20 @@ class CandidateImportSummary:
     skipped_count: int
     imported_annotation_ids: list[int]
     warnings: list[str]
+    linked_document_count: int = 0
+    created_document_count: int = 0
+    source_document_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CandidateDocumentLinkResult:
+    candidate_id: int
+    annotation_id: int | None
+    source_document_id: int | None
+    linked: bool
+    document_created: bool = False
+    matched_by: str | None = None
+    warning: str | None = None
 
 
 def _now_iso() -> str:
@@ -74,6 +91,14 @@ def _candidate_from_row(row: sqlite_row | dict[str, Any]) -> ResearchEventAnnota
         tags=normalize_tags(json_loads(data.get("tags_json"), [])),
         provider=data.get("provider") or "csv_manual",
         provider_metadata=json_loads(data.get("provider_metadata_json"), {}) or {},
+        document_type=data.get("document_type"),
+        published_at=(
+            None
+            if not data.get("published_at")
+            else pd.to_datetime(data.get("published_at"), utc=True).to_pydatetime()
+        ),
+        raw_text=data.get("raw_text") or "",
+        cleaned_text=data.get("cleaned_text") or "",
         status=data.get("status") or "staged",
         duplicate_of_annotation_id=data.get("duplicate_of_annotation_id"),
         duplicate_of_candidate_id=data.get("duplicate_of_candidate_id"),
@@ -83,6 +108,7 @@ def _candidate_from_row(row: sqlite_row | dict[str, Any]) -> ResearchEventAnnota
         updated_at=pd.to_datetime(data.get("updated_at"), utc=True).to_pydatetime(),
         reviewed_at=None if not data.get("reviewed_at") else pd.to_datetime(data.get("reviewed_at"), utc=True).to_pydatetime(),
         imported_annotation_id=data.get("imported_annotation_id"),
+        source_document_id=data.get("source_document_id"),
     )
 
 
@@ -176,6 +202,10 @@ def stage_candidate(db_path: str | Path, candidate: ResearchEventAnnotationCandi
         annotation_json_dumps(normalize_tags(item.tags)),
         item.provider,
         json_dumps(item.provider_metadata),
+        item.document_type,
+        None if item.published_at is None else _dt_iso(item.published_at),
+        item.raw_text,
+        item.cleaned_text,
         status,
         annotation_id,
         candidate_id,
@@ -192,12 +222,13 @@ def stage_candidate(db_path: str | Path, candidate: ResearchEventAnnotationCandi
             INSERT OR IGNORE INTO research_event_candidates (
                 ticker, event_date, available_at, event_type, title, summary,
                 source, source_url, evidence_text, sentiment_label, strength,
-                confidence, tags_json, provider, provider_metadata_json, status,
+                confidence, tags_json, provider, provider_metadata_json,
+                document_type, published_at, raw_text, cleaned_text, status,
                 duplicate_of_annotation_id, duplicate_of_candidate_id,
                 duplicate_reason, normalized_title, evidence_text_hash, dedupe_key,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             payload,
         )
@@ -327,10 +358,144 @@ def _candidate_to_annotation(candidate: ResearchEventAnnotationCandidate) -> Res
         summary=candidate.summary,
         evidence_text=candidate.evidence_text,
         tags=normalize_tags([*candidate.tags, "candidate_import", *quality_tags]),
+        source_document_id=candidate.source_document_id,
     )
 
 
-def import_accepted_candidates(db_path: str | Path, candidate_ids: list[int] | None = None) -> CandidateImportSummary:
+def create_or_link_candidate_document(
+    db_path: str | Path,
+    candidate_id: int,
+    annotation_id: int | None = None,
+) -> CandidateDocumentLinkResult:
+    """Create or reuse one company-IR source document without running extraction."""
+    create_candidate_tables(db_path)
+    with storage.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM research_event_candidates WHERE candidate_id = ?",
+            (int(candidate_id),),
+        ).fetchone()
+    if row is None:
+        return CandidateDocumentLinkResult(candidate_id, annotation_id, None, False, warning="Candidate not found.")
+
+    candidate = _candidate_from_row(row)
+    linked_annotation_id = annotation_id or candidate.imported_annotation_id
+    if candidate.provider != COMPANY_IR_DOCUMENT_PROVIDER:
+        return CandidateDocumentLinkResult(
+            candidate_id,
+            linked_annotation_id,
+            candidate.source_document_id,
+            False,
+            warning="Only company_ir_press_release candidates can create linked documents in this workflow.",
+        )
+    if candidate.source_document_id:
+        if linked_annotation_id is not None:
+            with storage.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE research_event_annotations
+                    SET source_document_id = ?, updated_at = ?
+                    WHERE annotation_id = ? AND (source_document_id IS NULL OR source_document_id != ?)
+                    """,
+                    (
+                        int(candidate.source_document_id),
+                        _now_iso(),
+                        int(linked_annotation_id),
+                        int(candidate.source_document_id),
+                    ),
+                )
+        return CandidateDocumentLinkResult(
+            candidate_id,
+            linked_annotation_id,
+            int(candidate.source_document_id),
+            True,
+            matched_by="existing_candidate_link",
+        )
+    if linked_annotation_id is None:
+        return CandidateDocumentLinkResult(
+            candidate_id,
+            None,
+            None,
+            False,
+            warning="Candidate must be imported as a research annotation before document linkage.",
+        )
+
+    text_source = "raw_text"
+    source_text = candidate.raw_text.strip()
+    if not source_text:
+        text_source = "cleaned_text"
+        source_text = candidate.cleaned_text.strip()
+    if not source_text:
+        text_source = "evidence_text"
+        source_text = candidate.evidence_text.strip()
+    if not source_text:
+        return CandidateDocumentLinkResult(
+            candidate_id,
+            linked_annotation_id,
+            None,
+            False,
+            warning="No raw_text, cleaned_text/text, or evidence_text is available for a source document.",
+        )
+
+    bridge_warnings: list[str] = []
+    parsing_status = None
+    if text_source == "evidence_text":
+        bridge_warnings.append("Document contains candidate evidence only; full source text was not provided.")
+        parsing_status = "partial"
+    document = build_source_document(
+        ticker=candidate.ticker,
+        document_type=COMPANY_IR_DOCUMENT_PROVIDER,
+        title=candidate.title,
+        raw_text=source_text,
+        source=COMPANY_IR_DOCUMENT_PROVIDER,
+        source_url=candidate.source_url,
+        published_at=candidate.published_at or candidate.available_at,
+        parsing_status=parsing_status,
+        warnings=bridge_warnings,
+        raw_payload_json=json_dumps(
+            {
+                "candidate_id": candidate_id,
+                "annotation_id": linked_annotation_id,
+                "provider": candidate.provider,
+                "available_at": _dt_iso(candidate.available_at),
+                "text_source": text_source,
+                "network_calls_would_occur": False,
+            }
+        ),
+    )
+    insert_result = insert_document_with_result(db_path, document)
+    now = _now_iso()
+    with storage.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE research_event_candidates
+            SET source_document_id = ?, updated_at = ?
+            WHERE candidate_id = ?
+            """,
+            (insert_result.document_id, now, int(candidate_id)),
+        )
+        conn.execute(
+            """
+            UPDATE research_event_annotations
+            SET source_document_id = ?, updated_at = ?
+            WHERE annotation_id = ?
+            """,
+            (insert_result.document_id, now, int(linked_annotation_id)),
+        )
+    return CandidateDocumentLinkResult(
+        candidate_id=candidate_id,
+        annotation_id=int(linked_annotation_id),
+        source_document_id=insert_result.document_id,
+        linked=True,
+        document_created=insert_result.inserted,
+        matched_by=insert_result.matched_by,
+    )
+
+
+def import_accepted_candidates(
+    db_path: str | Path,
+    candidate_ids: list[int] | None = None,
+    create_source_documents: bool = False,
+) -> CandidateImportSummary:
     create_candidate_tables(db_path)
     params: list[Any] = []
     where = "status = 'accepted'"
@@ -343,10 +508,26 @@ def import_accepted_candidates(db_path: str | Path, candidate_ids: list[int] | N
 
     imported_ids: list[int] = []
     warnings: list[str] = []
+    document_ids: list[int] = []
+    created_documents = 0
     skipped = 0
     for row in rows:
         candidate = _candidate_from_row(row)
         result = insert_annotation(db_path, _candidate_to_annotation(candidate))
+        if create_source_documents and candidate.provider == COMPANY_IR_DOCUMENT_PROVIDER:
+            try:
+                link_result = create_or_link_candidate_document(
+                    db_path,
+                    int(candidate.candidate_id or 0),
+                    annotation_id=result.annotation_id,
+                )
+                if link_result.linked and link_result.source_document_id is not None:
+                    document_ids.append(link_result.source_document_id)
+                    created_documents += int(link_result.document_created)
+                elif link_result.warning:
+                    warnings.append(f"Candidate {candidate.candidate_id}: {link_result.warning}")
+            except Exception as exc:
+                warnings.append(f"Candidate {candidate.candidate_id}: source-document linkage failed safely: {exc}")
         now = _now_iso()
         with storage.connect(db_path) as conn:
             conn.execute(
@@ -367,6 +548,9 @@ def import_accepted_candidates(db_path: str | Path, candidate_ids: list[int] | N
         skipped_count=skipped,
         imported_annotation_ids=imported_ids,
         warnings=warnings,
+        linked_document_count=len(set(document_ids)),
+        created_document_count=created_documents,
+        source_document_ids=sorted(set(document_ids)),
     )
 
 

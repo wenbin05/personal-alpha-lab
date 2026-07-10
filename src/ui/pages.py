@@ -15,6 +15,7 @@ from src.annotations.news_repository import (
     accept_candidate,
     build_candidate_ingestion_artifact,
     candidate_counts_by_status,
+    create_or_link_candidate_document,
     import_accepted_candidates,
     list_candidates,
     reject_candidate,
@@ -3060,6 +3061,10 @@ def model_lab_page(settings: Settings) -> None:
             if candidate_frame.empty:
                 st.info("No news/event candidates found for this filter.")
             else:
+                candidate_frame = candidate_frame.copy()
+                candidate_frame["source_document_linked"] = candidate_frame["source_document_id"].notna().map(
+                    {True: "yes", False: "no"}
+                )
                 candidate_quality = quality_distribution(candidate_frame)
                 q1, q2, q3 = st.columns(3)
                 q1.metric("Low-specificity neutral", int(candidate_quality.get("low_specificity_neutral_count", 0)))
@@ -3093,6 +3098,8 @@ def model_lab_page(settings: Settings) -> None:
                     "title",
                     "duplicate_reason",
                     "imported_annotation_id",
+                    "source_document_linked",
+                    "source_document_id",
                 ]
                 st.dataframe(
                     dataframe_for_streamlit(candidate_frame[[col for col in candidate_cols if col in candidate_frame.columns]]),
@@ -3128,6 +3135,8 @@ def model_lab_page(settings: Settings) -> None:
                                 "summary": selected_candidate.get("summary"),
                                 "evidence_text": selected_candidate.get("evidence_text"),
                                 "provider_metadata": selected_candidate.get("provider_metadata"),
+                                "source_document_id": selected_candidate.get("source_document_id"),
+                                "source_document_linked": selected_candidate.get("source_document_linked"),
                                 "scanner_scoring_effect": 0,
                             },
                             expanded=False,
@@ -3147,22 +3156,78 @@ def model_lab_page(settings: Settings) -> None:
                         except Exception as exc:
                             st.error(f"Reject failed: {exc}")
 
+                imported_ir = candidate_frame[
+                    candidate_frame["status"].eq("imported")
+                    & candidate_frame["provider"].eq("company_ir_press_release")
+                    & candidate_frame["source_document_id"].isna()
+                ]
+                if not imported_ir.empty:
+                    with st.expander("Link an imported company IR candidate to SourceDocument", expanded=False):
+                        st.caption(
+                            "This creates or reuses a local review document only. It does not run fallback/OpenAI extraction, "
+                            "create an active catalyst, or affect scanner scoring."
+                        )
+                        link_candidate_id = int(
+                            st.selectbox(
+                                "Imported company IR candidate",
+                                imported_ir["candidate_id"].astype(int).tolist(),
+                                format_func=lambda value: f"#{value}",
+                                key="news_candidate_document_link_id",
+                            )
+                        )
+                        link_confirm = st.checkbox(
+                            "Create or reuse the local SourceDocument for this imported candidate.",
+                            key="news_candidate_document_link_confirm",
+                        )
+                        if st.button(
+                            "Create / Link SourceDocument",
+                            disabled=not link_confirm,
+                            key="news_candidate_document_link_button",
+                        ):
+                            try:
+                                link_result = create_or_link_candidate_document(
+                                    settings.database_file,
+                                    link_candidate_id,
+                                )
+                                if link_result.linked:
+                                    action = "Created" if link_result.document_created else "Reused"
+                                    st.success(f"{action} SourceDocument #{link_result.source_document_id}.")
+                                else:
+                                    st.warning(link_result.warning or "Document linkage was not completed.")
+                            except Exception as exc:
+                                st.error(f"Source-document linkage failed: {exc}")
+
             import_confirm = st.checkbox(
                 "I understand accepted candidates will import only as research annotations and will not create active catalysts.",
                 key="news_candidate_import_confirm",
             )
+            create_ir_documents = st.checkbox(
+                "Create or reuse SourceDocuments for accepted company IR candidates that include source text or evidence.",
+                value=False,
+                key="news_candidate_import_documents",
+                help="Opt-in only. Documents become available in Documents / Text and LLM Review; no extraction runs automatically.",
+            )
             if st.button("Import Accepted Candidates", disabled=not import_confirm, key="news_candidate_import_accepted"):
                 try:
-                    summary = import_accepted_candidates(settings.database_file)
+                    summary = import_accepted_candidates(
+                        settings.database_file,
+                        create_source_documents=create_ir_documents,
+                    )
                     artifact = build_candidate_ingestion_artifact(settings.database_file)
                     artifact_path = annotation_dir / f"news_event_candidate_ingestion_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
                     artifact_path.write_text(json.dumps(artifact, indent=2, default=str), encoding="utf-8")
                     st.success(
                         f"Imported {summary.imported_count} accepted candidate(s); skipped {summary.skipped_count}. "
+                        f"Linked {summary.linked_document_count} SourceDocument(s), including "
+                        f"{summary.created_document_count} newly created. "
                         f"Artifact: {artifact_path.name}"
                     )
                     for warning in summary.warnings[:10]:
                         st.warning(warning)
+                    st.caption(
+                        "Linked documents are for manual review/extraction only. Open Documents / Text to inspect source text, "
+                        "then LLM Review to deliberately run an extraction. Scanner scoring remains unchanged."
+                    )
                 except Exception as exc:
                     st.error(f"Accepted-candidate import failed: {exc}")
 

@@ -53,6 +53,10 @@ Recommended columns:
 - `source`
 - `source_url`
 - `evidence_text`
+- `document_type` (`company_ir_press_release` for the strict IR provider)
+- `published_at`
+- `raw_text`
+- `cleaned_text` or `text`
 - `sentiment_label`
 - `strength`
 - `confidence`
@@ -96,6 +100,18 @@ Additional rules:
 - `source_quality` must be omitted or set to `official_company`; omitted values are defaulted to `official_company` and surfaced as a warning for reviewer verification.
 - rows are staged as candidates and must be accepted before they can be imported as research-only annotations.
 - accepted rows import only into `research_event_annotations` with `research_only = true` and `scanner_scoring_effect = 0`.
+
+## Optional Company IR Source-Document Bridge
+
+An accepted `company_ir_press_release` candidate can create or reuse a local `SourceDocument` only when the reviewer explicitly enables document linkage during import or deliberately links an already imported candidate.
+
+- Source text is taken from `raw_text`, then `cleaned_text`/`text`, then `evidence_text` as a limited fallback.
+- Evidence-only documents are marked partial and warn that full source text was not provided.
+- Documents use `document_type=company_ir_press_release` and `source=company_ir_press_release`.
+- Candidate and research-annotation rows both retain the linked `source_document_id`.
+- Documents are deduplicated by ticker plus source URL, ticker plus stable text hash, then ticker/title/published-date fallback.
+- Linked documents are visible in Documents / Text and become selectable in LLM Review.
+- No fallback or OpenAI extraction runs automatically. No active catalyst is created, and scanner scoring remains unchanged.
 
 ## Deduplication
 

@@ -17,8 +17,16 @@ from src.annotations.provider_registry import (
     build_provider_readiness_report,
     default_provider_registry,
 )
-from src.annotations.news_repository import accept_candidate, import_accepted_candidates, list_candidates, stage_candidates
+from src.annotations.news_repository import (
+    accept_candidate,
+    create_or_link_candidate_document,
+    import_accepted_candidates,
+    list_candidates,
+    stage_candidates,
+)
 from src.annotations.repository import list_annotations
+from src.data import storage
+from src.documents.repository import get_document_by_id, list_documents_by_ticker
 from src.quality.harness import check_provider_readiness
 
 
@@ -143,6 +151,89 @@ def test_company_ir_candidates_import_only_as_research_annotations(tmp_path) -> 
     assert int(annotations.iloc[0]["scanner_scoring_effect"]) == 0
     assert candidates.iloc[0]["provider"] == COMPANY_IR_PROVIDER_NAME
     assert candidates.iloc[0]["status"] == "imported"
+
+
+def test_company_ir_import_can_create_persisted_source_document_link_without_extraction(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    frame = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "event_date": "2024-01-03",
+                "available_at": "2024-01-03T14:00:00Z",
+                "published_at": "2024-01-03T13:55:00Z",
+                "event_type": "partnership",
+                "title": "Company IR source-document event",
+                "source": "company_ir",
+                "source_url": "https://example.com/ir/source-document",
+                "evidence_text": "Company announced a partnership.",
+                "raw_text": "Company announced a partnership with enough source context for local review.",
+                "document_type": "company_ir_press_release",
+                "sentiment_label": "positive",
+                "strength": 6,
+                "confidence": 0.8,
+                "source_quality": "official_company",
+                "provider_name": COMPANY_IR_PROVIDER_NAME,
+            }
+        ]
+    )
+    provider = CompanyIrPressReleaseResearchEventProvider(frame)
+    staged = stage_candidates(db_path, provider.fetch_candidates("AAA", date(2024, 1, 1), date(2024, 1, 31)))
+    accept_candidate(db_path, staged[0].candidate_id)
+
+    summary = import_accepted_candidates(db_path, create_source_documents=True)
+    annotations = list_annotations(db_path)
+    candidates = list_candidates(db_path, limit=None)
+    documents = list_documents_by_ticker(db_path, "AAA")
+    with storage.connect(db_path) as conn:
+        extraction_count = int(conn.execute("SELECT COUNT(*) FROM llm_extractions").fetchone()[0])
+        catalyst_count = int(conn.execute("SELECT COUNT(*) FROM catalysts").fetchone()[0])
+
+    assert summary.imported_count == 1
+    assert summary.linked_document_count == 1
+    assert summary.created_document_count == 1
+    assert len(documents) == 1
+    document_id = int(documents.iloc[0]["document_id"])
+    assert int(candidates.iloc[0]["source_document_id"]) == document_id
+    assert int(annotations.iloc[0]["source_document_id"]) == document_id
+    assert documents.iloc[0]["document_type"] == "company_ir_press_release"
+    assert documents.iloc[0]["source"] == "company_ir_press_release"
+    assert extraction_count == 0
+    assert catalyst_count == 0
+    assert int(annotations.iloc[0]["research_only"]) == 1
+    assert int(annotations.iloc[0]["scanner_scoring_effect"]) == 0
+
+    relinked = create_or_link_candidate_document(db_path, staged[0].candidate_id)
+    assert relinked.source_document_id == document_id
+    assert relinked.document_created is False
+    assert len(list_documents_by_ticker(db_path, "AAA")) == 1
+    assert get_document_by_id(db_path, document_id) is not None
+
+
+def test_company_ir_text_alias_is_available_for_opt_in_document_bridge(tmp_path) -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "event_date": "2024-01-03",
+                "available_at": "2024-01-03T14:00:00Z",
+                "event_type": "news",
+                "title": "Text alias event",
+                "source_url": "https://example.com/ir/text-alias",
+                "text": "Cleaned text supplied through the supported text alias.",
+                "provider_name": COMPANY_IR_PROVIDER_NAME,
+            }
+        ]
+    )
+
+    events = CompanyIrPressReleaseResearchEventProvider(frame).fetch_candidates(
+        "AAA", date(2024, 1, 1), date(2024, 1, 31)
+    )
+
+    assert len(events) == 1
+    assert events[0].document_type == "company_ir_press_release"
+    assert events[0].cleaned_text == "Cleaned text supplied through the supported text alias."
+    assert events[0].published_at == events[0].available_at
 
 
 def test_disabled_stub_providers_return_no_candidates_without_network_calls() -> None:

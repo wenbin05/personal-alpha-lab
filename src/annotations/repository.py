@@ -64,6 +64,7 @@ def insert_annotation(db_path: str | Path, annotation: ResearchEventAnnotation) 
         item.summary,
         item.evidence_text,
         json_dumps(normalize_tags(item.tags)),
+        item.source_document_id,
         1,
         0,
         dedupe_key,
@@ -76,10 +77,10 @@ def insert_annotation(db_path: str | Path, annotation: ResearchEventAnnotation) 
             INSERT OR IGNORE INTO research_event_annotations (
                 ticker, event_date, available_at, event_type, sentiment_label,
                 strength, confidence, source, source_url, title, summary,
-                evidence_text, tags_json, research_only, scanner_scoring_effect,
+                evidence_text, tags_json, source_document_id, research_only, scanner_scoring_effect,
                 dedupe_key, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             payload,
         )
@@ -144,4 +145,3 @@ def annotation_counts_by_ticker(db_path: str | Path) -> pd.DataFrame:
             """,
             conn,
         )
-

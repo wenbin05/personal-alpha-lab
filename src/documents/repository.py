@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,13 @@ DOCUMENT_COLUMNS = [
     "updated_at",
     "raw_payload_json",
 ]
+
+
+@dataclass(frozen=True)
+class DocumentInsertResult:
+    document_id: int
+    inserted: bool
+    matched_by: str | None = None
 
 
 def create_documents_table(db_path: str | Path) -> None:
@@ -133,24 +141,44 @@ def _empty_documents_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=DOCUMENT_COLUMNS)
 
 
-def insert_document(db_path: str | Path, document: SourceDocument) -> int:
+def insert_document_with_result(db_path: str | Path, document: SourceDocument) -> DocumentInsertResult:
     create_documents_table(db_path)
     row = _document_row(document)
     with storage.connect(db_path) as conn:
         if row["source_url"]:
             existing = conn.execute(
-                "SELECT document_id FROM source_documents WHERE source_url = ? ORDER BY document_id LIMIT 1",
-                (row["source_url"],),
+                """
+                SELECT document_id FROM source_documents
+                WHERE ticker = ? AND LOWER(RTRIM(source_url, '/')) = LOWER(RTRIM(?, '/'))
+                ORDER BY document_id LIMIT 1
+                """,
+                (row["ticker"], row["source_url"]),
             ).fetchone()
             if existing is not None:
-                return int(existing["document_id"])
+                return DocumentInsertResult(int(existing["document_id"]), False, "ticker_source_url")
 
         existing = conn.execute(
-            "SELECT document_id FROM source_documents WHERE text_hash = ? ORDER BY document_id LIMIT 1",
-            (row["text_hash"],),
+            """
+            SELECT document_id FROM source_documents
+            WHERE ticker = ? AND text_hash = ?
+            ORDER BY document_id LIMIT 1
+            """,
+            (row["ticker"], row["text_hash"]),
         ).fetchone()
         if existing is not None:
-            return int(existing["document_id"])
+            return DocumentInsertResult(int(existing["document_id"]), False, "ticker_text_hash")
+
+        if row["published_at"]:
+            existing = conn.execute(
+                """
+                SELECT document_id FROM source_documents
+                WHERE ticker = ? AND published_at = ? AND LOWER(TRIM(title)) = LOWER(TRIM(?))
+                ORDER BY document_id LIMIT 1
+                """,
+                (row["ticker"], row["published_at"], row["title"]),
+            ).fetchone()
+            if existing is not None:
+                return DocumentInsertResult(int(existing["document_id"]), False, "ticker_title_date")
 
         try:
             conn.execute(
@@ -170,17 +198,29 @@ def insert_document(db_path: str | Path, document: SourceDocument) -> int:
             )
         except sqlite3.IntegrityError:
             existing = conn.execute(
-                "SELECT document_id FROM source_documents WHERE text_hash = ? ORDER BY document_id LIMIT 1",
-                (row["text_hash"],),
+                """
+                SELECT document_id FROM source_documents
+                WHERE ticker = ? AND text_hash = ?
+                ORDER BY document_id LIMIT 1
+                """,
+                (row["ticker"], row["text_hash"]),
             ).fetchone()
             if existing is None:
                 raise
-            return int(existing["document_id"])
+            return DocumentInsertResult(int(existing["document_id"]), False, "ticker_text_hash")
         inserted = conn.execute(
-            "SELECT document_id FROM source_documents WHERE text_hash = ? ORDER BY document_id LIMIT 1",
-            (row["text_hash"],),
+            """
+            SELECT document_id FROM source_documents
+            WHERE ticker = ? AND text_hash = ?
+            ORDER BY document_id LIMIT 1
+            """,
+            (row["ticker"], row["text_hash"]),
         ).fetchone()
-        return int(inserted["document_id"])
+        return DocumentInsertResult(int(inserted["document_id"]), True, None)
+
+
+def insert_document(db_path: str | Path, document: SourceDocument) -> int:
+    return insert_document_with_result(db_path, document).document_id
 
 
 def update_document(db_path: str | Path, document_id: int, updates: dict[str, Any]) -> bool:
@@ -344,4 +384,3 @@ def document_display_frame(df: pd.DataFrame) -> pd.DataFrame:
             "created_at",
         ]
     ]
-

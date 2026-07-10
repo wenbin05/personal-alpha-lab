@@ -27,5 +27,6 @@ python scripts/quality_harness.py annotation-template-path
 - Annotation coverage uses point-in-time Dataset 49 rows and detects zero-coverage features, source-quality/informativeness distributions, low-specificity neutral rows, routine SEC-heavy rows, material non-SEC rows, and coarse future-availability violations.
 - Holdout status reports label coverage, promotion gates, and cache-only extension availability; an immature holdout candidate is expected to return a successful command status when manifest/leakage checks pass.
 - Provider readiness reports configured research-event providers, disabled/blocked providers, compliance notes, API key requirements, and whether any network calls would occur.
+- Company IR source-document linkage is local and opt-in; harness validation should confirm candidate/annotation/document links without creating LLM extractions or active catalysts.
 - The annotation template at `docs/templates/research_annotations_template.csv` contains synthetic demo rows only. Do not import it into production data unless explicitly requested.
 - The Streamlit health check verifies `http://localhost:8501/_stcore/health` and does not stop or restart the server.

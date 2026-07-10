@@ -65,6 +65,15 @@ def _parse_available_at(value: Any, event_date: date) -> datetime | None:
     return parsed.to_pydatetime().astimezone(UTC)
 
 
+def _parse_optional_timestamp(value: Any) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime().astimezone(UTC)
+
+
 def _parse_int(value: Any, default: int = 0) -> int | None:
     try:
         return int(float(value))
@@ -147,6 +156,14 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = MANUAL_CSV
         source = str(_cell(row, "source", provider)).strip() or provider
         source_url = str(_cell(row, "source_url", "")).strip() or None
         evidence_text = str(_cell(row, "evidence_text", "")).strip()
+        document_type = str(_cell(row, "document_type", "")).strip().lower() or None
+        published_value = _cell(row, "published_at", "")
+        published_at = _parse_optional_timestamp(published_value)
+        if str(published_value).strip() and published_at is None:
+            errors.append(CandidateImportError(row_number, "Invalid published_at."))
+            continue
+        raw_text = str(_cell(row, "raw_text", "")).strip()
+        cleaned_text = str(_cell(row, "cleaned_text", "")).strip() or str(_cell(row, "text", "")).strip()
         metadata = _parse_metadata(_cell(row, "provider_metadata_json", _cell(row, "metadata", "")))
         metadata.setdefault("csv_row_number", row_number)
         metadata.setdefault("provider_name", provider)
@@ -190,6 +207,10 @@ def parse_candidate_import_frame(frame: pd.DataFrame, provider: str = MANUAL_CSV
             tags=normalize_tags([*normalize_tags(_cell(row, "tags", "")), *quality_tags]),
             provider=provider_name,
             provider_metadata=metadata,
+            document_type=document_type,
+            published_at=published_at,
+            raw_text=raw_text,
+            cleaned_text=cleaned_text,
         )
         row_key = (candidate.ticker, candidate.event_date.isoformat(), candidate.title.strip().lower())
         if row_key in seen_keys:
@@ -244,6 +265,14 @@ def parse_company_ir_press_release_frame(frame: pd.DataFrame) -> CandidateImport
                 )
             )
             continue
+        if candidate.document_type and candidate.document_type != COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME:
+            errors.append(
+                CandidateImportError(
+                    row_number=row_number,
+                    message="company IR rows must use document_type=company_ir_press_release when document_type is supplied.",
+                )
+            )
+            continue
 
         metadata["provider_name"] = COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME
         metadata["provider_type"] = "company_ir_press_release"
@@ -264,6 +293,8 @@ def parse_company_ir_press_release_frame(frame: pd.DataFrame) -> CandidateImport
                 provider=COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME,
                 provider_metadata=metadata,
                 tags=tags,
+                document_type=COMPANY_IR_PRESS_RELEASE_PROVIDER_NAME,
+                published_at=candidate.published_at or candidate.available_at,
             )
         )
         if not source_quality:

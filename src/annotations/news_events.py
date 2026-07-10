@@ -65,6 +65,10 @@ class ResearchEventAnnotationCandidate:
     tags: list[str] = field(default_factory=list)
     provider: str = "csv_manual"
     provider_metadata: dict[str, Any] = field(default_factory=dict)
+    document_type: str | None = None
+    published_at: datetime | None = None
+    raw_text: str = ""
+    cleaned_text: str = ""
     status: str = "staged"
     candidate_id: int | None = None
     duplicate_of_annotation_id: int | None = None
@@ -75,6 +79,7 @@ class ResearchEventAnnotationCandidate:
     updated_at: datetime = field(default_factory=utc_now)
     reviewed_at: datetime | None = None
     imported_annotation_id: int | None = None
+    source_document_id: int | None = None
 
     def normalized(self) -> "ResearchEventAnnotationCandidate":
         event_type = (self.event_type or "other").strip().lower()
@@ -106,6 +111,16 @@ class ResearchEventAnnotationCandidate:
             tags=normalize_tags(self.tags),
             provider=(self.provider or "csv_manual").strip() or "csv_manual",
             provider_metadata=dict(self.provider_metadata or {}),
+            document_type=(self.document_type or "").strip().lower() or None,
+            published_at=(
+                self.published_at.replace(tzinfo=UTC).astimezone(UTC)
+                if self.published_at is not None and self.published_at.tzinfo is None
+                else self.published_at.astimezone(UTC)
+                if self.published_at is not None
+                else None
+            ),
+            raw_text=(self.raw_text or "").strip(),
+            cleaned_text=(self.cleaned_text or "").strip(),
             status=status,
             duplicate_of_annotation_id=self.duplicate_of_annotation_id,
             duplicate_of_candidate_id=self.duplicate_of_candidate_id,
@@ -115,6 +130,7 @@ class ResearchEventAnnotationCandidate:
             updated_at=self.updated_at,
             reviewed_at=self.reviewed_at,
             imported_annotation_id=self.imported_annotation_id,
+            source_document_id=self.source_document_id,
         )
 
 
@@ -146,4 +162,3 @@ class EmptyNewsEventProvider:
 
     def get_events(self, ticker: str, start_date: date, end_date: date) -> list[ResearchEventAnnotationCandidate]:
         return []
-

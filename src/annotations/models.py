@@ -72,6 +72,7 @@ class ResearchEventAnnotation:
     summary: str = ""
     evidence_text: str = ""
     tags: list[str] = field(default_factory=list)
+    source_document_id: int | None = None
     annotation_id: int | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -104,6 +105,7 @@ class ResearchEventAnnotation:
             summary=(self.summary or "").strip(),
             evidence_text=(self.evidence_text or "").strip(),
             tags=normalize_tags(self.tags),
+            source_document_id=self.source_document_id,
             created_at=self.created_at,
             updated_at=self.updated_at,
             research_only=True,
@@ -124,4 +126,3 @@ def annotation_dedupe_key(annotation: ResearchEventAnnotation) -> str:
         item.title.lower(),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import date
 
 import pandas as pd
@@ -7,6 +8,7 @@ import pandas as pd
 from src.catalysts.models import CatalystEvent
 from src.catalysts.repository import insert_catalyst
 from src.catalysts.sec_adapter import SecFilingsProvider
+from src.data import storage
 from src.documents.csv_import import parse_document_import_frame
 from src.documents.repository import (
     build_source_document,
@@ -66,6 +68,101 @@ def test_document_deduplicates_by_hash_and_source_url(tmp_path) -> None:
 
     assert first_id == second_id
     assert len(list_documents_by_ticker(db_path, "AAPL")) == 1
+
+
+def test_document_deduplication_is_ticker_scoped_and_uses_title_date_fallback(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    shared_text = long_text()
+    aapl_id = insert_document(
+        db_path,
+        build_source_document(
+            "AAPL",
+            "company_ir_press_release",
+            "Shared wording",
+            shared_text,
+            source="company_ir_press_release",
+            published_at="2024-01-03",
+        ),
+    )
+    msft_id = insert_document(
+        db_path,
+        build_source_document(
+            "MSFT",
+            "company_ir_press_release",
+            "Shared wording",
+            shared_text,
+            source="company_ir_press_release",
+            published_at="2024-01-03",
+        ),
+    )
+    title_date_duplicate_id = insert_document(
+        db_path,
+        build_source_document(
+            "AAPL",
+            "company_ir_press_release",
+            "Shared wording",
+            "Different text on the same titled release date.",
+            source="company_ir_press_release",
+            published_at="2024-01-03",
+        ),
+    )
+
+    assert aapl_id != msft_id
+    assert title_date_duplicate_id == aapl_id
+    assert len(list_documents_by_ticker(db_path, "AAPL")) == 1
+    assert len(list_documents_by_ticker(db_path, "MSFT")) == 1
+
+
+def test_legacy_global_document_hash_constraint_migrates_without_losing_rows(tmp_path) -> None:
+    db_path = tmp_path / "alpha_lab.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE source_documents (
+                document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                catalyst_id INTEGER,
+                document_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_url TEXT,
+                accession_number TEXT,
+                filing_type TEXT,
+                title TEXT NOT NULL,
+                published_at TEXT,
+                raw_text TEXT,
+                cleaned_text TEXT,
+                text_hash TEXT NOT NULL UNIQUE,
+                parsing_status TEXT NOT NULL,
+                warnings TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                raw_payload_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO source_documents (
+                ticker, document_type, source, title, raw_text, cleaned_text, text_hash,
+                parsing_status, created_at, updated_at
+            ) VALUES ('AAPL', 'manual_text', 'manual', 'Legacy', 'legacy text', 'legacy text',
+                      'legacy-hash', 'success', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')
+            """
+        )
+
+    storage.init_db(db_path)
+    with storage.connect(db_path) as conn:
+        original = conn.execute("SELECT ticker, text_hash FROM source_documents").fetchall()
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'source_documents'"
+        ).fetchone()[0]
+        unique_index = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_source_documents_unique_ticker_hash'"
+        ).fetchone()[0]
+
+    assert [(row["ticker"], row["text_hash"]) for row in original] == [("AAPL", "legacy-hash")]
+    assert "text_hash TEXT NOT NULL UNIQUE" not in table_sql
+    assert unique_index == 1
 
 
 def test_text_cleaning_hash_preview_and_warnings() -> None:

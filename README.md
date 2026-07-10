@@ -229,6 +229,7 @@ Stored source documents include:
 - SEC filing text
 - News articles or excerpts you paste manually
 - Earnings call excerpts or transcripts you paste manually
+- Company IR/newsroom/press-release text linked from an explicitly reviewed research candidate
 - Imported CSV text/news rows
 - Other manually supplied research text
 
@@ -256,6 +257,8 @@ Rows with `sentiment_label`, `catalyst_strength`, or `confidence` can create a l
 SEC filing text fetches use the filing URL stored in SEC metadata. Large filings are guarded by a maximum download size and may be stored as `partial`. Failed fetches store a warning/status instead of crashing the app. SEC text fetching can be affected by EDGAR availability, timeouts, file size, rate limits, malformed filings, or missing primary document URLs.
 
 Source document availability improves auditability only. It does not materially boost scanner scores. Catalyst scoring still comes from catalyst events, not document count.
+
+The strict `company_ir_press_release` candidate workflow can optionally create or reuse a `SourceDocument` during accepted-candidate import. The CSV supports `document_type`, `published_at`, `raw_text`, and `cleaned_text`/`text`. Linkage is opt-in, documents are deduplicated within ticker by source URL, stable text hash, or title/date fallback, and both the candidate and research annotation retain the document ID. This bridge never starts fallback/OpenAI extraction automatically and never creates an active catalyst.
 
 Privacy/security note: user-pasted text and imported CSV text are stored locally in SQLite at `data/alpha_lab.db`. Do not paste confidential third-party content unless you are comfortable storing it on this machine.
 
