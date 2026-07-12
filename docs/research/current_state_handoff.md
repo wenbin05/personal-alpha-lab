@@ -50,6 +50,8 @@ Phase 2E-5A audited the production database through read-only SQLite access:
 
 The queue requires manually supplied source text. It does not fetch URLs, fabricate text, create documents, run extraction, or affect scanner scoring.
 
+Phase 2E-5B1 added a dry-run-first company IR document-enrichment importer and workflow. It can validate a manually completed queue, plan document creation/reuse/linkage, and requires explicit `--apply` with a timestamped database backup. No production enrichment was applied in Phase 2E-5B1, so production coverage remains 0 of 38 linked documents.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
@@ -57,7 +59,8 @@ The queue requires manually supplied source text. It does not fetch URLs, fabric
 - Phase 2E-3: real company IR candidate pilot
 - Phase 2E-4: company IR `SourceDocument` bridge
 - Phase 2E-5A: read-only company IR document coverage audit and manual enrichment queue
-- Latest commit: `1a1359a Add company IR source document bridge`
+- Phase 2E-5B1: manual company IR document-enrichment backfill foundation; production dry-run only
+- Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints
 
