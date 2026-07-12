@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from src.annotations.csv_import import parse_annotation_import_frame
+from src.annotations.document_coverage import build_document_coverage_audit
 from src.annotations.models import ANNOTATION_EVENT_TYPES, ANNOTATION_SENTIMENT_LABELS, ResearchEventAnnotation
 from src.annotations.news_csv_provider import parse_candidate_import_frame, parse_company_ir_press_release_frame
 from src.annotations.news_repository import (
@@ -2882,6 +2883,54 @@ def model_lab_page(settings: Settings) -> None:
             hide_index=True,
         )
         st.json(readiness.get("guardrails", {}), expanded=False)
+
+        st.divider()
+        st.write("Company IR document coverage")
+        st.caption(
+            "Read-only candidate-to-annotation-to-SourceDocument audit. Workflow priority is not an alpha score, "
+            "and this panel never creates documents or runs extraction."
+        )
+        try:
+            document_coverage = build_document_coverage_audit(
+                settings.database_file,
+                provider="company_ir_press_release",
+            )
+            coverage_summary = document_coverage.summary
+            d1, d2, d3, d4, d5 = st.columns(5)
+            d1.metric("IR Candidates", int(coverage_summary.get("total_company_ir_candidates", 0) or 0))
+            d2.metric(
+                "Linked Documents",
+                f"{int(coverage_summary.get('candidates_with_linked_documents', 0) or 0)} "
+                f"({float(coverage_summary.get('linked_document_pct', 0.0) or 0.0):.1f}%)",
+            )
+            d3.metric("Complete", int(coverage_summary.get("complete_documents", 0) or 0))
+            d4.metric("Needs Enrichment", int(coverage_summary.get("queue_row_count", 0) or 0))
+            d5.metric("Broken Links", int(coverage_summary.get("broken_linkages", 0) or 0))
+
+            coverage_left, coverage_right = st.columns(2)
+            with coverage_left:
+                st.write("Coverage status")
+                st.dataframe(
+                    dataframe_for_streamlit(pd.DataFrame(document_coverage.status_counts)),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with coverage_right:
+                st.write("Top missing-document tickers")
+                missing_tickers = pd.DataFrame(document_coverage.top_missing_document_tickers)
+                if missing_tickers.empty:
+                    st.info("No company IR candidates currently require document enrichment.")
+                else:
+                    st.dataframe(dataframe_for_streamlit(missing_tickers), width="stretch", hide_index=True)
+
+            queue_path = settings.database_file.parent / "processed" / "phase2e5a_company_ir_enrichment_queue.csv"
+            st.code(str(queue_path), language=None)
+            st.info(
+                "The enrichment queue requires manually supplied source text. No URL is fetched, no text is fabricated, "
+                "and no database record is changed by this coverage panel."
+            )
+        except Exception as exc:
+            st.warning(f"Company IR document coverage is unavailable: {exc}")
 
     with st.expander("Research Event Annotations", expanded=False):
         st.caption(

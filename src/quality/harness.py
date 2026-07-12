@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from src.annotations.provider_registry import build_provider_readiness_report
+from src.annotations.document_coverage import build_document_coverage_audit
 from src.data import storage
 from src.modeling.annotation_features import build_annotation_coverage_audit, derive_annotation_features
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
@@ -373,6 +374,43 @@ def check_provider_readiness() -> HarnessResult:
         "violation_count": len(violations),
     }
     return HarnessResult(status, summary, {"violations": violations, **report})
+
+
+def check_document_coverage(
+    db_path: str | Path,
+    provider: str = "company_ir_press_release",
+) -> HarnessResult:
+    audit = build_document_coverage_audit(db_path, provider=provider)
+    violations: list[str] = []
+    if not audit.summary.get("read_only"):
+        violations.append("Document coverage service did not report read-only operation.")
+    if audit.summary.get("network_calls_would_occur"):
+        violations.append("Document coverage service reported a network call path.")
+    if audit.summary.get("scanner_scoring_effect") != 0:
+        violations.append("Document coverage workflow reported a nonzero scanner scoring effect.")
+    status = "passed" if not violations else "failed"
+    summary = dict(audit.summary)
+    summary.update(
+        {
+            "document_coverage_check": status,
+            "violation_count": len(violations),
+        }
+    )
+    return HarnessResult(
+        status=status,
+        summary=summary,
+        details={
+            "violations": violations,
+            "warnings": audit.warnings,
+            "status_counts": audit.status_counts,
+            "coverage_by_ticker": audit.coverage_by_ticker,
+            "coverage_by_sentiment": audit.coverage_by_sentiment,
+            "coverage_by_informativeness": audit.coverage_by_informativeness,
+            "coverage_by_event_type": audit.coverage_by_event_type,
+            "top_missing_document_tickers": audit.top_missing_document_tickers,
+            "_queue_rows": audit.queue.to_dict("records"),
+        },
+    )
 
 
 def _annotation_future_availability_violations(db_path: str | Path, dataset_id: int) -> list[dict[str, Any]]:

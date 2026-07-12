@@ -5,16 +5,20 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_settings
+from src.annotations.document_coverage import QUEUE_COLUMNS, write_enrichment_queue_csv
 from src.quality.harness import (
     build_final_report,
     check_annotation_coverage,
     check_dataset_manifest,
+    check_document_coverage,
     check_holdout_status,
     check_provider_readiness,
     compare_model_run_to_baseline,
@@ -129,6 +133,22 @@ def provider_readiness(args: argparse.Namespace) -> int:
     return 0 if result.status == "passed" else 2
 
 
+def document_coverage(args: argparse.Namespace) -> int:
+    result = check_document_coverage(_db_path(args.db), provider=args.provider)
+    queue_rows = result.details.get("_queue_rows", [])
+    details = {key: value for key, value in result.details.items() if key != "_queue_rows"}
+    payload = {"status": result.status, "summary": result.summary, "details": details}
+    if args.queue_output:
+        queue = pd.DataFrame(queue_rows).reindex(columns=QUEUE_COLUMNS)
+        queue_path = write_enrichment_queue_csv(queue, args.queue_output)
+        payload["queue_output"] = str(queue_path)
+    if args.output:
+        artifact_path = write_json_artifact(args.output, payload)
+        payload["output"] = str(artifact_path)
+    _print_result(payload)
+    return 0 if result.status == "passed" else 2
+
+
 def final_report(args: argparse.Namespace) -> int:
     report = build_final_report(
         runtime_status=args.runtime_status,
@@ -206,6 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("provider-readiness", help="Report research-event provider readiness without making provider calls.")
     cmd.add_argument("--output")
     cmd.set_defaults(func=provider_readiness)
+
+    cmd = sub.add_parser("document-coverage", help="Audit candidate-to-document coverage using read-only SQLite access.")
+    cmd.add_argument("--provider", default="company_ir_press_release")
+    cmd.add_argument("--output")
+    cmd.add_argument("--queue-output")
+    cmd.set_defaults(func=document_coverage)
 
     cmd = sub.add_parser("final-report", help="Create a consistent phase report artifact.")
     cmd.add_argument("--runtime-status", required=True)

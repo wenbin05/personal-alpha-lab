@@ -36,12 +36,27 @@ It is research and paper-trading software, not live execution.
 - `reddit_api_placeholder`: disabled
 - No enabled provider makes network calls.
 
+## Company IR Document Coverage
+
+Phase 2E-5A audited the production database through read-only SQLite access:
+
+- Company IR candidates: 38 across 8 tickers
+- Candidates resolving to research annotations: 38 (100%)
+- Candidates with linked SourceDocuments: 0 (0%)
+- Missing documents: 38 (100%)
+- Broken or reused document links: 0
+- Manual enrichment queue: 38 rows at `data/processed/phase2e5a_company_ir_enrichment_queue.csv`
+- Top missing-document tickers: NVDA 6; AAPL, AMD, COIN, META, and TSLA 5 each; AMZN 4; MSFT 3
+
+The queue requires manually supplied source text. It does not fetch URLs, fabricate text, create documents, run extraction, or affect scanner scoring.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
 - Phase 2E-2: strict company IR provider workflow
 - Phase 2E-3: real company IR candidate pilot
 - Phase 2E-4: company IR `SourceDocument` bridge
+- Phase 2E-5A: read-only company IR document coverage audit and manual enrichment queue
 - Latest commit: `1a1359a Add company IR source document bridge`
 
 ## Hard Constraints

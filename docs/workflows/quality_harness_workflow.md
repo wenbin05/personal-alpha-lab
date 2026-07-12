@@ -14,6 +14,7 @@ python scripts/quality_harness.py model-compare --model-run-id 247 --baseline-ru
 python scripts/quality_harness.py annotation-coverage --dataset-id 49
 python scripts/quality_harness.py holdout-status --dataset-id 50
 python scripts/quality_harness.py provider-readiness
+python scripts/quality_harness.py document-coverage --provider company_ir_press_release --output data/processed/company_ir_document_coverage.json --queue-output data/processed/company_ir_enrichment_queue.csv
 python scripts/quality_harness.py health-check
 python scripts/quality_harness.py annotation-template-path
 ```
@@ -28,5 +29,6 @@ python scripts/quality_harness.py annotation-template-path
 - Holdout status reports label coverage, promotion gates, and cache-only extension availability; an immature holdout candidate is expected to return a successful command status when manifest/leakage checks pass.
 - Provider readiness reports configured research-event providers, disabled/blocked providers, compliance notes, API key requirements, and whether any network calls would occur.
 - Company IR source-document linkage is local and opt-in; harness validation should confirm candidate/annotation/document links without creating LLM extractions or active catalysts.
+- Document coverage uses read-only SQLite access, makes no provider calls, and exports a workflow-priority queue only; its priority is not an alpha or scanner score.
 - The annotation template at `docs/templates/research_annotations_template.csv` contains synthetic demo rows only. Do not import it into production data unless explicitly requested.
 - The Streamlit health check verifies `http://localhost:8501/_stcore/health` and does not stop or restart the server.
