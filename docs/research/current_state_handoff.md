@@ -52,6 +52,20 @@ The queue requires manually supplied source text. It does not fetch URLs, fabric
 
 Phase 2E-5B1 added a dry-run-first company IR document-enrichment importer and workflow. It can validate a manually completed queue, plan document creation/reuse/linkage, and requires explicit `--apply` with a timestamped database backup. No production enrichment was applied in Phase 2E-5B1, so production coverage remains 0 of 38 linked documents.
 
+## Frozen Shadow Artifact
+
+Phase 3A-0B defines `shadow_ridge_technical_v1`, a new executable technical Ridge artifact derived from the accepted Dataset 49 contract. Runs 145 and 283 are design references only; the artifact is explicitly not equivalent to either historical experiment. Its required contract is Dataset 49 with 19,495 exact stored rows and hash `e9523e1134b7eb32b142cb628d51bde76d5a6d139f4be2aba2545f3ca4416184`, using only the ordered `technical_core` features and no Dataset 50 data.
+
+Both reproducibility gates passed and the immutable local artifact was created:
+
+- Artifact ID: `shadow_ridge_technical_v1_1ee8071db3f0`
+- Artifact checksum: `4bb794ba7c9f1d9edb2b5430b58c9e6a9f692aad80ba16fab6959f298ac7da45`
+- Feature manifest hash: `05d60960a2a6917fe3b2aa9acbe6167b351324860c4cb1e33bebf2c0a66c256d`
+- Training rows: 19,339 through 2026-06-12; 156 missing-target rows excluded
+- Replay: passed on 12 rows with maximum absolute difference `1.0408340855860843e-16`
+
+The fit preserved the frozen no-scaling preprocessing contract and surfaced an ill-conditioned-matrix warning; no tuning or contract change was made. The artifact remains `frozen_exploratory` / `exploratory_shadow`. It does not create daily shadow predictions, change scanner scoring, or establish validated alpha. Phase 3A-1 may use this artifact only after retaining its strict feature-order, integrity, and prospective-research guardrails.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness

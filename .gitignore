@@ -8,5 +8,6 @@ data/*.db
 data/*.db-*
 data/raw/*
 data/processed/*
+data/model_artifacts/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep

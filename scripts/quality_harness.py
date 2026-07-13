@@ -20,6 +20,7 @@ from src.quality.harness import (
     check_dataset_manifest,
     check_document_coverage,
     check_holdout_status,
+    check_model_artifact,
     check_provider_readiness,
     compare_model_run_to_baseline,
     compare_scanner_snapshots,
@@ -108,6 +109,15 @@ def annotation_coverage(args: argparse.Namespace) -> int:
 
 def holdout_status(args: argparse.Namespace) -> int:
     result = check_holdout_status(_db_path(args.db), dataset_id=args.dataset_id)
+    payload = {"status": result.status, "summary": result.summary, "details": result.details}
+    if args.output:
+        write_json_artifact(args.output, payload)
+    _print_result(payload)
+    return 0 if result.status == "passed" else 2
+
+
+def model_artifact_check(args: argparse.Namespace) -> int:
+    result = check_model_artifact(_db_path(args.db), artifact_id=args.artifact_id)
     payload = {"status": result.status, "summary": result.summary, "details": result.details}
     if args.output:
         write_json_artifact(args.output, payload)
@@ -216,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--dataset-id", type=int, required=True)
     cmd.add_argument("--output")
     cmd.set_defaults(func=holdout_status)
+
+    cmd = sub.add_parser("model-artifact-check", help="Verify a registered frozen model artifact and deterministic replay fixture.")
+    cmd.add_argument("--artifact-id", required=True)
+    cmd.add_argument("--output")
+    cmd.set_defaults(func=model_artifact_check)
 
     cmd = sub.add_parser("health-check", help="Check Streamlit health endpoint without stopping the server.")
     cmd.add_argument("--url", default="http://localhost:8501/_stcore/health")

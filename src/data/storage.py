@@ -738,6 +738,42 @@ def init_db(db_path: str | Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_model_predictions_snapshot
                 ON model_predictions (snapshot_id);
+
+            CREATE TABLE IF NOT EXISTS model_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                artifact_name TEXT NOT NULL,
+                artifact_version TEXT NOT NULL,
+                model_family TEXT NOT NULL,
+                status TEXT NOT NULL,
+                evaluation_regime TEXT NOT NULL,
+                derived_from_run_id INTEGER,
+                design_reference_run_ids_json TEXT NOT NULL DEFAULT '[]',
+                dataset_id INTEGER NOT NULL,
+                dataset_hash TEXT NOT NULL,
+                feature_manifest_hash TEXT NOT NULL,
+                universe_hash TEXT NOT NULL,
+                training_cutoff TEXT NOT NULL,
+                artifact_path TEXT NOT NULL,
+                manifest_path TEXT NOT NULL,
+                artifact_checksum TEXT NOT NULL,
+                code_commit_hash TEXT NOT NULL,
+                specification_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                UNIQUE(artifact_name, artifact_version)
+            );
+
+            CREATE TRIGGER IF NOT EXISTS model_artifacts_immutable_update
+            BEFORE UPDATE ON model_artifacts
+            BEGIN
+                SELECT RAISE(ABORT, 'model_artifacts rows are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS model_artifacts_immutable_delete
+            BEFORE DELETE ON model_artifacts
+            BEGIN
+                SELECT RAISE(ABORT, 'model_artifacts rows are immutable');
+            END;
             """
         )
         _migrate_source_document_hash_scope(conn)

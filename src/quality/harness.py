@@ -16,6 +16,7 @@ from src.annotations.document_coverage import build_document_coverage_audit
 from src.data import storage
 from src.modeling.annotation_features import build_annotation_coverage_audit, derive_annotation_features
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
+from src.modeling.artifacts import check_registered_artifact
 from src.modeling.repository import list_model_final_metrics
 
 
@@ -354,6 +355,24 @@ def check_holdout_status(db_path: str | Path, dataset_id: int) -> HarnessResult:
             "extension_plan": extension_plan,
         },
     )
+
+
+def check_model_artifact(db_path: str | Path, artifact_id: str) -> HarnessResult:
+    report = check_registered_artifact(db_path, artifact_id)
+    status = str(report.get("status") or "failed")
+    summary = {
+        "artifact_id": artifact_id,
+        "artifact_integrity": status,
+        "dataset_id": report.get("dataset_id"),
+        "dataset_hash": report.get("dataset_hash"),
+        "feature_manifest_hash": report.get("feature_manifest_hash"),
+        "feature_contract_status": report.get("feature_contract_status"),
+        "registry_status": report.get("registry_status"),
+        "replay_row_count": report.get("replay_row_count"),
+        "maximum_absolute_prediction_difference": report.get("maximum_absolute_prediction_difference"),
+        "dependency_version_status": report.get("dependency_version_status"),
+    }
+    return HarnessResult(status=status, summary=summary, details=report)
 
 
 def check_provider_readiness() -> HarnessResult:
