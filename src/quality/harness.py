@@ -17,6 +17,7 @@ from src.data import storage
 from src.modeling.annotation_features import build_annotation_coverage_audit, derive_annotation_features
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
 from src.modeling.artifacts import check_registered_artifact
+from src.modeling.shadow_predictions import shadow_status_report
 from src.modeling.repository import list_model_final_metrics
 
 
@@ -371,6 +372,22 @@ def check_model_artifact(db_path: str | Path, artifact_id: str) -> HarnessResult
         "replay_row_count": report.get("replay_row_count"),
         "maximum_absolute_prediction_difference": report.get("maximum_absolute_prediction_difference"),
         "dependency_version_status": report.get("dependency_version_status"),
+    }
+    return HarnessResult(status=status, summary=summary, details=report)
+
+
+def check_shadow_status(db_path: str | Path, artifact_id: str | None = None) -> HarnessResult:
+    report = shadow_status_report(db_path, artifact_id=artifact_id)
+    status = str(report.get("status") or "failed")
+    summary = {
+        "artifact_id": report.get("artifact_id"),
+        "artifact_integrity": report.get("artifact_integrity"),
+        "run_count": report.get("run_count"),
+        "prediction_date_range": report.get("prediction_date_range"),
+        "prediction_date_count": report.get("prediction_date_count"),
+        "sample_status": report.get("sample_status"),
+        "violation_count": len(report.get("violations", [])),
+        "shadow_status_check": status,
     }
     return HarnessResult(status=status, summary=summary, details=report)
 

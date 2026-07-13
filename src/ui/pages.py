@@ -153,6 +153,7 @@ from src.extractions.review_workflow import (
 )
 from src.features.regime import classify_market_regime
 from src.modeling.feature_sets import FEATURE_SET_NAMES, feature_set_definitions
+from src.modeling.artifacts import list_model_artifacts
 from src.modeling.feature_quality import (
     build_feature_quality_audit,
     feature_set_quality_rows,
@@ -183,6 +184,7 @@ from src.modeling.diagnostics import (
 )
 from src.modeling.evaluation_regime import get_dataset_evaluation_regime
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
+from src.modeling.shadow_predictions import list_shadow_prediction_runs, list_shadow_predictions, shadow_status_report
 from src.modeling.repository import (
     list_model_final_metrics,
     list_model_fold_metrics,
@@ -2530,6 +2532,48 @@ def _metrics_records(frame: pd.DataFrame) -> pd.DataFrame:
         base.update(metrics)
         rows.append(base)
     return pd.DataFrame(rows)
+
+
+def shadow_research_page(settings: Settings) -> None:
+    st.header("Shadow Research")
+    st.warning(
+        "Exploratory shadow predictions only. Rankings are not validated alpha, trading recommendations, or scanner inputs."
+    )
+    artifacts = list_model_artifacts(settings.database_file)
+    frozen = artifacts[artifacts["evaluation_regime"].eq("exploratory_shadow")] if not artifacts.empty else pd.DataFrame()
+    if frozen.empty:
+        st.info("No frozen exploratory shadow artifact is registered.")
+        return
+    artifact = frozen.sort_values("created_at", ascending=False).iloc[0]
+    artifact_id = str(artifact["artifact_id"])
+    status = shadow_status_report(settings.database_file, artifact_id=artifact_id)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Prediction runs", int(status.get("run_count", 0)))
+    c2.metric("Prediction dates", int(status.get("prediction_date_count", 0)))
+    c3.metric("Forward sample", str(status.get("sample_status", "insufficient_forward_sample")))
+    st.caption(
+        f"Artifact: {artifact_id} | feature hash: {str(artifact['feature_manifest_hash'])[:12]}... | "
+        "scanner score contribution: 0"
+    )
+    runs = list_shadow_prediction_runs(settings.database_file, limit=100)
+    if runs.empty:
+        st.info("No immutable shadow prediction runs have been recorded yet.")
+        return
+    latest = runs.iloc[0]
+    st.subheader(f"Latest Run: {latest['prediction_date']}")
+    warnings = json.loads(str(latest.get("warnings_json") or "[]"))
+    if warnings:
+        st.warning(" | ".join(str(item) for item in warnings))
+    predictions = list_shadow_predictions(settings.database_file, int(latest["run_id"]), limit=500)
+    display_columns = [
+        "predicted_rank", "ticker", "predicted_value", "predicted_percentile", "data_quality_flags"
+    ]
+    st.dataframe(
+        dataframe_for_streamlit(predictions[[column for column in display_columns if column in predictions.columns]]),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption("Predictions are immutable research records and are never combined with the Daily Scanner score.")
 
 
 def model_lab_page(settings: Settings) -> None:

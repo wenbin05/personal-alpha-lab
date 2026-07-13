@@ -66,6 +66,8 @@ Both reproducibility gates passed and the immutable local artifact was created:
 
 The fit preserved the frozen no-scaling preprocessing contract and surfaced an ill-conditioned-matrix warning; no tuning or contract change was made. The artifact remains `frozen_exploratory` / `exploratory_shadow`. It does not create daily shadow predictions, change scanner scoring, or establish validated alpha. Phase 3A-1 may use this artifact only after retaining its strict feature-order, integrity, and prospective-research guardrails.
 
+Phase 3A-1A adds a cache-only, dry-run-first path for immutable daily shadow predictions. It uses only the frozen artifact's ordered technical features, blocks duplicate date/artifact runs, stores deterministic ranks, and keeps shadow results separate from scanner scoring. The first controlled run is immutable run 1 for 2026-06-29 with 26 predictions and zero excluded tickers. Its monitoring state is `insufficient_forward_sample`. Outcome tracking is intentionally deferred to Phase 3A-1B.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
