@@ -14,12 +14,14 @@ import pandas as pd
 
 from src.datasets.builder import as_of_after_close, precompute_feature_sets_for_dates, precompute_market_regimes_for_dates
 from src.modeling.artifacts import check_registered_artifact
-from src.utils.trading_calendar import is_trading_day, latest_expected_trading_day
+from src.utils.trading_calendar import is_trading_day, latest_expected_trading_day, next_trading_day
 
 
 BENCHMARK_TICKERS = ("SPY", "QQQ", "IWM", "^VIX")
+SHADOW_OUTCOME_HORIZONS = (1, 5, 20)
 MIN_PRELIMINARY_PREDICTION_DATES = 20
-MIN_MEANINGFUL_PREDICTION_DATES = 60
+MIN_DEVELOPING_PREDICTION_DATES = 60
+MIN_FORMAL_REVIEW_PREDICTION_DATES = 120
 
 
 class ShadowPredictionError(ValueError):
@@ -36,6 +38,13 @@ def _sha256_json(value: Any) -> str:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _as_utc_datetime(value: datetime | None) -> datetime:
+    resolved = value or datetime.now(UTC)
+    if resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=UTC)
+    return resolved.astimezone(UTC)
 
 
 def _readonly_connect(db_path: str | Path) -> sqlite3.Connection:
@@ -168,6 +177,16 @@ def _rank_predictions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ordered
 
 
+def _shadow_sample_status(prediction_date_count: int) -> str:
+    if prediction_date_count < MIN_PRELIMINARY_PREDICTION_DATES:
+        return "insufficient_forward_sample"
+    if prediction_date_count < MIN_DEVELOPING_PREDICTION_DATES:
+        return "preliminary_only"
+    if prediction_date_count < MIN_FORMAL_REVIEW_PREDICTION_DATES:
+        return "developing_sample"
+    return "eligible_for_formal_review"
+
+
 @dataclass(frozen=True)
 class ShadowPredictionPlan:
     artifact_id: str
@@ -182,6 +201,19 @@ class ShadowPredictionPlan:
     predictions: list[dict[str, Any]]
     warnings: list[str]
     duplicate_run_id: int | None
+
+
+@dataclass(frozen=True)
+class ShadowOutcomePlan:
+    run_id: int | None
+    evaluated_at: str
+    prediction_count: int
+    existing_outcome_count: int
+    planned_outcomes: list[dict[str, Any]]
+    pending_outcomes: list[dict[str, Any]]
+    missing_price_cases: list[dict[str, Any]]
+    benchmark_exclusion_count: int
+    warnings: list[str]
 
 
 def build_shadow_prediction_plan(
@@ -308,10 +340,10 @@ def dry_run_shadow_prediction(db_path: str | Path, artifact_id: str, as_of: date
     }
 
 
-def _backup_database(db_path: str | Path) -> Path:
+def _backup_database(db_path: str | Path, phase: str = "phase3a1a") -> Path:
     source = Path(db_path)
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    backup = source.with_name(f"{source.stem}_backup_phase3a1a_{stamp}{source.suffix}")
+    backup = source.with_name(f"{source.stem}_backup_{phase}_{stamp}{source.suffix}")
     with sqlite3.connect(source) as src, sqlite3.connect(backup) as dst:
         src.backup(dst)
     return backup
@@ -350,7 +382,25 @@ def _create_shadow_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(prediction_run_id, ticker)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS shadow_prediction_outcomes (
+            outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prediction_id INTEGER NOT NULL,
+            horizon_sessions INTEGER NOT NULL,
+            entry_date TEXT NOT NULL,
+            exit_date TEXT NOT NULL,
+            realized_return REAL NOT NULL,
+            benchmark_return REAL NOT NULL,
+            excess_return REAL NOT NULL,
+            label_available_at TEXT NOT NULL,
+            evaluated_at TEXT NOT NULL,
+            data_quality_flags_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE(prediction_id, horizon_sessions)
+        )
+        """,
         "CREATE INDEX IF NOT EXISTS idx_shadow_predictions_date ON shadow_predictions(prediction_date, predicted_rank)",
+        "CREATE INDEX IF NOT EXISTS idx_shadow_outcomes_horizon ON shadow_prediction_outcomes(horizon_sessions, exit_date)",
         """
         CREATE TRIGGER IF NOT EXISTS shadow_prediction_runs_immutable_update
         BEFORE UPDATE ON shadow_prediction_runs WHEN OLD.status='completed'
@@ -370,6 +420,16 @@ def _create_shadow_schema(conn: sqlite3.Connection) -> None:
         CREATE TRIGGER IF NOT EXISTS shadow_predictions_immutable_delete
         BEFORE DELETE ON shadow_predictions
         BEGIN SELECT RAISE(ABORT, 'shadow predictions are immutable'); END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS shadow_prediction_outcomes_immutable_update
+        BEFORE UPDATE ON shadow_prediction_outcomes
+        BEGIN SELECT RAISE(ABORT, 'shadow prediction outcomes are immutable'); END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS shadow_prediction_outcomes_immutable_delete
+        BEFORE DELETE ON shadow_prediction_outcomes
+        BEGIN SELECT RAISE(ABORT, 'shadow prediction outcomes are immutable'); END
         """,
     ]
     for statement in statements:
@@ -483,10 +543,262 @@ def list_shadow_predictions(db_path: str | Path, run_id: int, limit: int = 500) 
     return frame
 
 
+def _advance_trading_sessions(start: date, sessions: int) -> date:
+    current = start
+    for _ in range(int(sessions)):
+        current = next_trading_day(current)
+    return current
+
+
+def _close_by_date(frame: pd.DataFrame) -> dict[date, float]:
+    if frame is None or frame.empty or "close" not in frame.columns:
+        return {}
+    return {
+        pd.Timestamp(index).date(): float(value)
+        for index, value in frame["close"].items()
+        if pd.notna(value)
+    }
+
+
+def build_shadow_outcome_plan(
+    db_path: str | Path,
+    run_id: int | None = None,
+    evaluated_at: datetime | None = None,
+) -> ShadowOutcomePlan:
+    evaluation_time = _as_utc_datetime(evaluated_at)
+    cache_cutoff = latest_expected_trading_day(evaluation_time)
+    with _readonly_connect(db_path) as conn:
+        if not _table_exists(conn, "shadow_prediction_runs") or not _table_exists(conn, "shadow_predictions"):
+            raise ShadowPredictionError("Shadow prediction records are unavailable.")
+        params: tuple[Any, ...] = () if run_id is None else (int(run_id),)
+        where = "" if run_id is None else "WHERE r.run_id=?"
+        prediction_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT p.prediction_id, p.prediction_run_id, p.ticker, p.prediction_date
+                FROM shadow_predictions p
+                JOIN shadow_prediction_runs r ON r.run_id=p.prediction_run_id
+                {where}
+                ORDER BY p.prediction_run_id, p.prediction_id
+                """,
+                params,
+            )
+        ]
+        if run_id is not None and not prediction_rows:
+            raise ShadowPredictionError(f"Shadow prediction run {run_id} was not found or has no predictions.")
+        selected_prediction_ids = {int(row["prediction_id"]) for row in prediction_rows}
+        existing: set[tuple[int, int]] = set()
+        if _table_exists(conn, "shadow_prediction_outcomes"):
+            existing = {
+                (int(row["prediction_id"]), int(row["horizon_sessions"]))
+                for row in conn.execute("SELECT prediction_id, horizon_sessions FROM shadow_prediction_outcomes")
+            }
+        selected_existing = {key for key in existing if key[0] in selected_prediction_ids}
+        histories = {
+            ticker: _load_cached_history(conn, ticker, cache_cutoff)
+            for ticker in sorted({"SPY", *(str(row["ticker"]) for row in prediction_rows)})
+        }
+
+    close_maps = {ticker: _close_by_date(frame) for ticker, frame in histories.items()}
+    spy_closes = close_maps.get("SPY", {})
+    planned: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    missing_cases: list[dict[str, Any]] = []
+    benchmark_exclusions = 0
+    for prediction in prediction_rows:
+        prediction_id = int(prediction["prediction_id"])
+        ticker = str(prediction["ticker"])
+        if ticker == "SPY":
+            benchmark_exclusions += 1
+        prediction_date = pd.to_datetime(prediction["prediction_date"]).date()
+        entry_date = next_trading_day(prediction_date)
+        ticker_closes = close_maps.get(ticker, {})
+        for horizon in SHADOW_OUTCOME_HORIZONS:
+            key = (prediction_id, horizon)
+            if key in existing:
+                continue
+            exit_date = _advance_trading_sessions(entry_date, horizon)
+            available_at = as_of_after_close(exit_date)
+            base = {
+                "prediction_id": prediction_id,
+                "prediction_run_id": int(prediction["prediction_run_id"]),
+                "ticker": ticker,
+                "horizon_sessions": horizon,
+                "entry_date": entry_date.isoformat(),
+                "exit_date": exit_date.isoformat(),
+                "label_available_at": available_at.isoformat(),
+            }
+            if available_at > evaluation_time:
+                pending.append({**base, "reason": "not_yet_mature"})
+                continue
+            missing = []
+            if entry_date not in ticker_closes:
+                missing.append("missing_ticker_entry_close")
+            if exit_date not in ticker_closes:
+                missing.append("missing_ticker_exit_close")
+            if entry_date not in spy_closes:
+                missing.append("missing_spy_entry_close")
+            if exit_date not in spy_closes:
+                missing.append("missing_spy_exit_close")
+            if missing:
+                row = {**base, "reason": ",".join(missing)}
+                pending.append(row)
+                missing_cases.append(row)
+                continue
+            entry_price = float(ticker_closes[entry_date])
+            exit_price = float(ticker_closes[exit_date])
+            benchmark_entry = float(spy_closes[entry_date])
+            benchmark_exit = float(spy_closes[exit_date])
+            if entry_price == 0 or benchmark_entry == 0:
+                row = {**base, "reason": "zero_entry_close"}
+                pending.append(row)
+                missing_cases.append(row)
+                continue
+            realized_return = exit_price / entry_price - 1.0
+            benchmark_return = benchmark_exit / benchmark_entry - 1.0
+            flags = {
+                "benchmark": "SPY",
+                "benchmark_excluded_from_evaluation": ticker == "SPY",
+                "cache_only": True,
+                "entry_convention": "next_session_close",
+                "label_available_after_exit_close": True,
+                "research_only": True,
+            }
+            planned.append(
+                {
+                    **base,
+                    "realized_return": float(realized_return),
+                    "benchmark_return": float(benchmark_return),
+                    "excess_return": float(realized_return - benchmark_return),
+                    "data_quality_flags": flags,
+                }
+            )
+    warnings = []
+    if missing_cases:
+        warnings.append(f"{len(missing_cases)} matured outcomes are blocked by incomplete cached prices.")
+    return ShadowOutcomePlan(
+        run_id=run_id,
+        evaluated_at=evaluation_time.isoformat(timespec="seconds"),
+        prediction_count=len(prediction_rows),
+        existing_outcome_count=len(selected_existing),
+        planned_outcomes=planned,
+        pending_outcomes=pending,
+        missing_price_cases=missing_cases,
+        benchmark_exclusion_count=benchmark_exclusions,
+        warnings=warnings,
+    )
+
+
+def dry_run_shadow_outcomes(
+    db_path: str | Path,
+    run_id: int | None = None,
+    evaluated_at: datetime | None = None,
+) -> dict[str, Any]:
+    plan = build_shadow_outcome_plan(db_path, run_id=run_id, evaluated_at=evaluated_at)
+    return {
+        "status": "ready" if plan.planned_outcomes else "no_newly_matured_outcomes",
+        "dry_run": True,
+        "database_mutated": False,
+        "plan": asdict(plan),
+        "outcomes_planned": len(plan.planned_outcomes),
+        "pending_outcomes": len(plan.pending_outcomes),
+        "research_only": True,
+        "scanner_scoring_effect": 0,
+    }
+
+
+def apply_shadow_outcomes(
+    db_path: str | Path,
+    run_id: int | None = None,
+    evaluated_at: datetime | None = None,
+) -> dict[str, Any]:
+    plan = build_shadow_outcome_plan(db_path, run_id=run_id, evaluated_at=evaluated_at)
+    if not plan.planned_outcomes:
+        return {
+            "status": "no_changes",
+            "outcomes_created": 0,
+            "pending_outcomes": len(plan.pending_outcomes),
+            "database_mutated": False,
+            "database_backup": None,
+        }
+    backup = _backup_database(db_path, phase="phase3a1b")
+    created_at = _now_iso()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _create_shadow_schema(conn)
+        conn.executemany(
+            """
+            INSERT INTO shadow_prediction_outcomes (
+                prediction_id, horizon_sessions, entry_date, exit_date,
+                realized_return, benchmark_return, excess_return,
+                label_available_at, evaluated_at, data_quality_flags_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row["prediction_id"], row["horizon_sessions"], row["entry_date"], row["exit_date"],
+                    row["realized_return"], row["benchmark_return"], row["excess_return"],
+                    row["label_available_at"], plan.evaluated_at,
+                    _canonical_json(row["data_quality_flags"]), created_at,
+                )
+                for row in plan.planned_outcomes
+            ],
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    by_horizon = {
+        str(horizon): sum(1 for row in plan.planned_outcomes if row["horizon_sessions"] == horizon)
+        for horizon in SHADOW_OUTCOME_HORIZONS
+    }
+    return {
+        "status": "recorded",
+        "outcomes_created": len(plan.planned_outcomes),
+        "outcomes_created_by_horizon": by_horizon,
+        "pending_outcomes": len(plan.pending_outcomes),
+        "missing_price_cases": len(plan.missing_price_cases),
+        "database_mutated": True,
+        "database_backup": str(backup),
+        "run_id": run_id,
+        "research_only": True,
+        "scanner_scoring_effect": 0,
+    }
+
+
+def list_shadow_prediction_outcomes(db_path: str | Path, run_id: int | None = None) -> pd.DataFrame:
+    with _readonly_connect(db_path) as conn:
+        if not _table_exists(conn, "shadow_prediction_outcomes"):
+            return pd.DataFrame()
+        where = "" if run_id is None else "WHERE p.prediction_run_id=?"
+        params: tuple[Any, ...] = () if run_id is None else (int(run_id),)
+        frame = pd.read_sql_query(
+            f"""
+            SELECT o.*, p.prediction_run_id, p.ticker, p.prediction_date
+            FROM shadow_prediction_outcomes o
+            JOIN shadow_predictions p ON p.prediction_id=o.prediction_id
+            {where}
+            ORDER BY p.prediction_run_id, o.horizon_sessions, p.ticker
+            """,
+            conn,
+            params=params,
+        )
+    if not frame.empty:
+        frame["data_quality_flags"] = frame["data_quality_flags_json"].map(json.loads)
+    return frame
+
+
 def shadow_status_report(db_path: str | Path, artifact_id: str | None = None) -> dict[str, Any]:
     with _readonly_connect(db_path) as conn:
         runs = []
         predictions_per_run = []
+        total_predictions = 0
+        outcomes_by_horizon = {str(horizon): {"matured": 0, "pending": 0} for horizon in SHADOW_OUTCOME_HORIZONS}
+        benchmark_exclusions = 0
         violations: list[str] = []
         if _table_exists(conn, "shadow_prediction_runs"):
             runs = [dict(row) for row in conn.execute("SELECT * FROM shadow_prediction_runs ORDER BY prediction_date, run_id")]
@@ -501,6 +813,7 @@ def shadow_status_report(db_path: str | Path, artifact_id: str | None = None) ->
                 count = conn.execute(
                     "SELECT COUNT(*) FROM shadow_predictions WHERE prediction_run_id=?", (run["run_id"],)
                 ).fetchone()[0]
+                total_predictions += int(count)
                 predictions_per_run.append(
                     {"run_id": int(run["run_id"]), "prediction_date": run["prediction_date"], "prediction_count": int(count)}
                 )
@@ -514,20 +827,57 @@ def shadow_status_report(db_path: str | Path, artifact_id: str | None = None) ->
                     violations.append(f"missing_artifact:{run['artifact_id']}")
                 elif any(str(run[field]) != str(artifact[field]) for field in ("artifact_checksum", "feature_manifest_hash", "universe_hash")):
                     violations.append(f"artifact_hash_mismatch:{run['run_id']}")
+            benchmark_exclusions = int(
+                conn.execute("SELECT COUNT(*) FROM shadow_predictions WHERE ticker='SPY'").fetchone()[0]
+            )
+            for horizon in SHADOW_OUTCOME_HORIZONS:
+                outcomes_by_horizon[str(horizon)]["pending"] = total_predictions
+            if _table_exists(conn, "shadow_prediction_outcomes"):
+                duplicate_outcomes = conn.execute(
+                    """
+                    SELECT prediction_id, horizon_sessions, COUNT(*) AS count
+                    FROM shadow_prediction_outcomes
+                    GROUP BY prediction_id, horizon_sessions HAVING COUNT(*)>1
+                    """
+                ).fetchall()
+                violations.extend(
+                    f"duplicate_outcome:{row['prediction_id']}:{row['horizon_sessions']}" for row in duplicate_outcomes
+                )
+                orphan_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM shadow_prediction_outcomes o
+                        LEFT JOIN shadow_predictions p ON p.prediction_id=o.prediction_id
+                        WHERE p.prediction_id IS NULL
+                        """
+                    ).fetchone()[0]
+                )
+                if orphan_count:
+                    violations.append(f"orphan_outcomes:{orphan_count}")
+                for horizon in SHADOW_OUTCOME_HORIZONS:
+                    matured = int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM shadow_prediction_outcomes WHERE horizon_sessions=?", (horizon,)
+                        ).fetchone()[0]
+                    )
+                    outcomes_by_horizon[str(horizon)] = {
+                        "matured": matured,
+                        "pending": max(0, total_predictions - matured),
+                    }
         selected_artifact = artifact_id or (str(runs[-1]["artifact_id"]) if runs else None)
     integrity = None if selected_artifact is None else check_registered_artifact(db_path, selected_artifact)
     if integrity is not None and integrity.get("status") != "passed":
         violations.append("registered_artifact_integrity_failed")
     prediction_dates = sorted({str(run["prediction_date"]) for run in runs})
     date_count = len(prediction_dates)
-    sample_status = (
-        "insufficient_forward_sample"
-        if date_count < MIN_PRELIMINARY_PREDICTION_DATES
-        else "preliminary_monitoring"
-        if date_count < MIN_MEANINGFUL_PREDICTION_DATES
-        else "meaningful_review_sample"
-    )
+    sample_status = _shadow_sample_status(date_count)
     latest = runs[-1] if runs else None
+    outcome_plan = None
+    if runs:
+        try:
+            outcome_plan = build_shadow_outcome_plan(db_path)
+        except ShadowPredictionError as exc:
+            violations.append(f"outcome_plan_failed:{exc}")
     return {
         "status": "passed" if not violations else "failed",
         "artifact_id": selected_artifact,
@@ -535,10 +885,19 @@ def shadow_status_report(db_path: str | Path, artifact_id: str | None = None) ->
         "run_count": len(runs),
         "prediction_date_range": None if not prediction_dates else [prediction_dates[0], prediction_dates[-1]],
         "predictions_per_run": predictions_per_run,
+        "total_predictions": total_predictions,
         "prediction_date_count": date_count,
         "sample_status": sample_status,
         "minimum_preliminary_dates": MIN_PRELIMINARY_PREDICTION_DATES,
-        "minimum_meaningful_dates": MIN_MEANINGFUL_PREDICTION_DATES,
+        "minimum_developing_dates": MIN_DEVELOPING_PREDICTION_DATES,
+        "minimum_formal_review_dates": MIN_FORMAL_REVIEW_PREDICTION_DATES,
+        "outcomes_by_horizon": outcomes_by_horizon,
+        "matured_outcome_count": sum(value["matured"] for value in outcomes_by_horizon.values()),
+        "pending_outcome_count": sum(value["pending"] for value in outcomes_by_horizon.values()),
+        "missing_price_case_count": 0 if outcome_plan is None else len(outcome_plan.missing_price_cases),
+        "missing_price_cases": [] if outcome_plan is None else outcome_plan.missing_price_cases,
+        "benchmark_exclusion_count": benchmark_exclusions,
+        "benchmark_policy": "SPY predictions are retained for audit and excluded from cross-sectional evaluation metrics.",
         "latest_run_warnings": [] if latest is None else json.loads(str(latest["warnings_json"] or "[]")),
         "violations": violations,
         "research_only": True,

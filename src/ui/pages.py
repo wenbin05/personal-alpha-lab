@@ -2551,6 +2551,13 @@ def shadow_research_page(settings: Settings) -> None:
     c1.metric("Prediction runs", int(status.get("run_count", 0)))
     c2.metric("Prediction dates", int(status.get("prediction_date_count", 0)))
     c3.metric("Forward sample", str(status.get("sample_status", "insufficient_forward_sample")))
+    if status.get("sample_status") == "insufficient_forward_sample":
+        prediction_date_count = int(status.get("prediction_date_count", 0))
+        noun = "date is" if prediction_date_count == 1 else "dates are"
+        st.warning(
+            f"{prediction_date_count} prediction {noun} insufficient for performance conclusions; "
+            "outcomes are maturity tracking only."
+        )
     st.caption(
         f"Artifact: {artifact_id} | feature hash: {str(artifact['feature_manifest_hash'])[:12]}... | "
         "scanner score contribution: 0"
@@ -2561,6 +2568,19 @@ def shadow_research_page(settings: Settings) -> None:
         return
     latest = runs.iloc[0]
     st.subheader(f"Latest Run: {latest['prediction_date']}")
+    st.subheader("Outcome Maturity")
+    maturity_columns = st.columns(3)
+    outcomes_by_horizon = status.get("outcomes_by_horizon", {})
+    for column, horizon in zip(maturity_columns, (1, 5, 20), strict=True):
+        maturity = outcomes_by_horizon.get(str(horizon), {})
+        column.metric(
+            f"{horizon}-session",
+            f"{int(maturity.get('matured', 0))} matured",
+            f"{int(maturity.get('pending', 0))} pending",
+        )
+    st.caption(
+        "SPY outcomes are retained for audit but excluded from cross-sectional IC, ranking, and equity directional metrics."
+    )
     warnings = json.loads(str(latest.get("warnings_json") or "[]"))
     if warnings:
         st.warning(" | ".join(str(item) for item in warnings))

@@ -66,7 +66,9 @@ Both reproducibility gates passed and the immutable local artifact was created:
 
 The fit preserved the frozen no-scaling preprocessing contract and surfaced an ill-conditioned-matrix warning; no tuning or contract change was made. The artifact remains `frozen_exploratory` / `exploratory_shadow`. It does not create daily shadow predictions, change scanner scoring, or establish validated alpha. Phase 3A-1 may use this artifact only after retaining its strict feature-order, integrity, and prospective-research guardrails.
 
-Phase 3A-1A adds a cache-only, dry-run-first path for immutable daily shadow predictions. It uses only the frozen artifact's ordered technical features, blocks duplicate date/artifact runs, stores deterministic ranks, and keeps shadow results separate from scanner scoring. The first controlled run is immutable run 1 for 2026-06-29 with 26 predictions and zero excluded tickers. Its monitoring state is `insufficient_forward_sample`. Outcome tracking is intentionally deferred to Phase 3A-1B.
+Phase 3A-1A adds a cache-only, dry-run-first path for immutable daily shadow predictions. It uses only the frozen artifact's ordered technical features, blocks duplicate date/artifact runs, stores deterministic ranks, and keeps shadow results separate from scanner scoring. The first controlled run is immutable run 1 for 2026-06-29 with 26 predictions and zero excluded tickers.
+
+Phase 3A-1B adds append-only 1-, 5-, and 20-session outcome maturity tracking using the Dataset Lab next-session-close convention. The first controlled update appended two immutable SPY audit outcomes for run 1: one 1-session and one 5-session result. The remaining 76 prediction/horizon pairs are pending; 50 matured non-SPY pairs are blocked by missing post-2026-06-29 cached equity prices, and all 26 twenty-session pairs remain immature. SPY outcomes are excluded from cross-sectional model evidence, and one prediction date remains `insufficient_forward_sample`. No retraining, prediction changes, scoring integration, or Dataset 50 evaluation occurs.
 
 ## Latest Completed Work
 
@@ -76,6 +78,8 @@ Phase 3A-1A adds a cache-only, dry-run-first path for immutable daily shadow pre
 - Phase 2E-4: company IR `SourceDocument` bridge
 - Phase 2E-5A: read-only company IR document coverage audit and manual enrichment queue
 - Phase 2E-5B1: manual company IR document-enrichment backfill foundation; production dry-run only
+- Phase 3A-1A: immutable cache-only daily shadow predictions
+- Phase 3A-1B: immutable cache-only shadow outcome maturity tracking
 - Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints

@@ -386,6 +386,12 @@ def check_shadow_status(db_path: str | Path, artifact_id: str | None = None) -> 
         "prediction_date_range": report.get("prediction_date_range"),
         "prediction_date_count": report.get("prediction_date_count"),
         "sample_status": report.get("sample_status"),
+        "total_predictions": report.get("total_predictions"),
+        "outcomes_by_horizon": report.get("outcomes_by_horizon"),
+        "matured_outcome_count": report.get("matured_outcome_count"),
+        "pending_outcome_count": report.get("pending_outcome_count"),
+        "missing_price_case_count": report.get("missing_price_case_count"),
+        "benchmark_exclusion_count": report.get("benchmark_exclusion_count"),
         "violation_count": len(report.get("violations", [])),
         "shadow_status_check": status,
     }

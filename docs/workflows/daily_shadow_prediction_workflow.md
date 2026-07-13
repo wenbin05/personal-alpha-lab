@@ -51,12 +51,39 @@ Predictions are sorted by descending predicted value with ticker as the determin
   --artifact-id shadow_ridge_technical_v1_1ee8071db3f0
 ```
 
-The harness verifies run uniqueness, stored prediction counts, artifact/hash consistency, and artifact integrity. It reports `insufficient_forward_sample` before 20 prediction dates, `preliminary_monitoring` from 20 through 59 dates, and `meaningful_review_sample` at 60 dates. These thresholds govern monitoring language only; outcome evaluation is a separate phase.
+The harness verifies run uniqueness, stored prediction counts, outcome uniqueness, artifact/hash consistency, and artifact integrity. Forward-sample language is based on distinct immutable prediction dates:
+
+- fewer than 20: `insufficient_forward_sample`
+- 20 through 59: `preliminary_only`
+- 60 through 119: `developing_sample`
+- 120 or more: `eligible_for_formal_review`
+
+These thresholds govern monitoring language only. They do not establish validated alpha.
+
+## Outcome Maturity
+
+Preview newly matured outcomes without changing SQLite:
+
+```bash
+.venv/bin/python scripts/update_shadow_outcomes.py --run-id <run-id> --dry-run
+```
+
+After reviewing missing-cache and pending-horizon details, append the matured rows explicitly:
+
+```bash
+.venv/bin/python scripts/update_shadow_outcomes.py --run-id <run-id> --apply
+```
+
+Apply creates a timestamped database backup. Outcome rows are unique by prediction and horizon, immutable after insertion, and idempotent on repeat execution.
+
+The timing contract matches Dataset Lab: prediction date `T` is known after its close, entry uses the next U.S. trading-session close, exit uses the close `N` sessions after entry, and `label_available_at` is after the exit close. Returns never include the prediction-date-to-entry move. Only cached OHLCV may be read; absent entry, exit, or benchmark bars remain pending with explicit data-quality reasons.
+
+SPY is the benchmark for excess return. A SPY prediction is retained with its matured outcome for audit, but it is excluded from cross-sectional IC, rank, and equity directional metrics because SPY excess return versus itself is not useful model evidence.
 
 ## Safety
 
 - Never refresh or download market data merely to create a shadow run.
 - Never overwrite an existing run.
 - Never combine shadow predictions with Daily Scanner scores.
-- Never create outcome rows in this phase.
+- Never overwrite a matured outcome or fabricate a missing cached close.
 - Preserve the artifact and its feature order exactly.
