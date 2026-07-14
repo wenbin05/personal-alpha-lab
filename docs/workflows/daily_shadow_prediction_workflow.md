@@ -87,3 +87,29 @@ SPY is the benchmark for excess return. A SPY prediction is retained with its ma
 - Never combine shadow predictions with Daily Scanner scores.
 - Never overwrite a matured outcome or fabricate a missing cached close.
 - Preserve the artifact and its feature order exactly.
+
+## One-Command Daily Cycle
+
+The scheduler-ready coordinator composes the same artifact check, cache audit, outcome maturity, prediction, and shadow-status contracts:
+
+```bash
+.venv/bin/python scripts/run_daily_shadow_cycle.py --dry-run
+```
+
+Dry-run is the default, makes no database changes, and never calls yfinance. It reports the latest fully completed U.S. session, required cache coverage, planned outcome additions, duplicate prediction status, artifact integrity, and forward-sample status.
+
+To apply append-only outcomes and at most one prediction run using the existing cache:
+
+```bash
+.venv/bin/python scripts/run_daily_shadow_cycle.py --apply
+```
+
+To explicitly authorize bounded yfinance refreshes for missing ranges before applying:
+
+```bash
+.venv/bin/python scripts/run_daily_shadow_cycle.py --apply --refresh-market-data
+```
+
+The coordinator uses a process lock and creates one timestamped SQLite backup immediately before the first mutation. It filters downloaded rows through the resolved completed session, applies matured outcomes before recording a new prediction, skips an existing date/artifact run, and never backfills older prediction dates. A repeat invocation is therefore a safe no-op when no outcome or prediction work remains. No network call is possible without both `--apply` and `--refresh-market-data`.
+
+The command prints JSON and accepts `--output <path>` for scheduler capture. Exit code 0 means completed or safely no-op; a nonzero code indicates lock, artifact, refresh, database, or prediction failure. This command does not install cron, launchd, or a background process.

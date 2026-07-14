@@ -70,6 +70,10 @@ Phase 3A-1A adds a cache-only, dry-run-first path for immutable daily shadow pre
 
 Phase 3A-1B adds append-only 1-, 5-, and 20-session outcome maturity tracking using the Dataset Lab next-session-close convention. The first controlled update appended two immutable SPY audit outcomes for run 1: one 1-session and one 5-session result. The remaining 76 prediction/horizon pairs are pending; 50 matured non-SPY pairs are blocked by missing post-2026-06-29 cached equity prices, and all 26 twenty-session pairs remain immature. SPY outcomes are excluded from cross-sectional model evidence, and one prediction date remains `insufficient_forward_sample`. No retraining, prediction changes, scoring integration, or Dataset 50 evaluation occurs.
 
+Phase 3A-2A refreshed only the authorized missing OHLCV ranges through 2026-07-10, matured 25 non-SPY 1-session and 25 non-SPY 5-session outcomes for run 1, and recorded immutable run 2 for 2026-07-10 with 26 predictions. There are now 2 prospective prediction dates, 52 predictions, and 52 matured outcomes; 20-session outcomes remain pending and the sample remains `insufficient_forward_sample`.
+
+Phase 3A-2B adds `scripts/run_daily_shadow_cycle.py`, a dry-run-first scheduler-ready coordinator for the existing refresh, maturity, prediction, and status contracts. Network refresh requires explicit `--apply --refresh-market-data`; mutating cycles use one lock and one backup, outcomes are appended before at most one current-session prediction, and repeat invocations safely no-op. No scheduler daemon is installed.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
@@ -80,6 +84,8 @@ Phase 3A-1B adds append-only 1-, 5-, and 20-session outcome maturity tracking us
 - Phase 2E-5B1: manual company IR document-enrichment backfill foundation; production dry-run only
 - Phase 3A-1A: immutable cache-only daily shadow predictions
 - Phase 3A-1B: immutable cache-only shadow outcome maturity tracking
+- Phase 3A-2A: controlled OHLCV refresh, run 1 maturity update, and immutable run 2
+- Phase 3A-2B: one-command guarded daily shadow cycle
 - Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints

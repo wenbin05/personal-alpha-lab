@@ -436,13 +436,19 @@ def _create_shadow_schema(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
-def apply_shadow_prediction(db_path: str | Path, artifact_id: str, as_of: date | str) -> dict[str, Any]:
+def apply_shadow_prediction(
+    db_path: str | Path,
+    artifact_id: str,
+    as_of: date | str,
+    *,
+    create_backup: bool = True,
+) -> dict[str, Any]:
     plan = build_shadow_prediction_plan(db_path, artifact_id, as_of)
     if plan.duplicate_run_id is not None:
         raise ShadowPredictionError(
             f"Shadow run already exists for {plan.prediction_date} and {artifact_id}: run {plan.duplicate_run_id}."
         )
-    backup = _backup_database(db_path)
+    backup = _backup_database(db_path) if create_backup else None
     now = _now_iso()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -504,7 +510,7 @@ def apply_shadow_prediction(db_path: str | Path, artifact_id: str, as_of: date |
         "prediction_date": plan.prediction_date,
         "prediction_count": len(plan.predictions),
         "excluded_tickers": plan.excluded_tickers,
-        "database_backup": str(backup),
+        "database_backup": None if backup is None else str(backup),
         "artifact_id": artifact_id,
         "artifact_checksum": plan.artifact_checksum,
         "feature_manifest_hash": plan.feature_manifest_hash,
@@ -712,6 +718,8 @@ def apply_shadow_outcomes(
     db_path: str | Path,
     run_id: int | None = None,
     evaluated_at: datetime | None = None,
+    *,
+    create_backup: bool = True,
 ) -> dict[str, Any]:
     plan = build_shadow_outcome_plan(db_path, run_id=run_id, evaluated_at=evaluated_at)
     if not plan.planned_outcomes:
@@ -722,7 +730,7 @@ def apply_shadow_outcomes(
             "database_mutated": False,
             "database_backup": None,
         }
-    backup = _backup_database(db_path, phase="phase3a1b")
+    backup = _backup_database(db_path, phase="phase3a1b") if create_backup else None
     created_at = _now_iso()
     conn = sqlite3.connect(db_path)
     try:
@@ -763,7 +771,7 @@ def apply_shadow_outcomes(
         "pending_outcomes": len(plan.pending_outcomes),
         "missing_price_cases": len(plan.missing_price_cases),
         "database_mutated": True,
-        "database_backup": str(backup),
+        "database_backup": None if backup is None else str(backup),
         "run_id": run_id,
         "research_only": True,
         "scanner_scoring_effect": 0,
