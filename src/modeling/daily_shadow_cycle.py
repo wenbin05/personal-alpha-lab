@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import fcntl
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -163,9 +163,9 @@ def _refresh_missing_ranges(
             downloaded = provider.download_history(ticker, start=start, end=resolved_session)
             if downloaded.empty:
                 raise market_data.MarketDataError("provider returned no rows")
-            dates = pd.to_datetime(downloaded.index).tz_localize(None)
-            bounded = downloaded.loc[(dates.date >= start) & (dates.date <= resolved_session)].copy()
-            bounded.index = dates[(dates.date >= start) & (dates.date <= resolved_session)]
+            normalized = storage.normalize_ohlcv(downloaded)
+            dates = pd.to_datetime(normalized["date"], errors="coerce").dt.date
+            bounded = normalized.loc[(dates >= start) & (dates <= resolved_session)].copy()
             if bounded.empty:
                 raise market_data.MarketDataError("provider returned no completed-session rows")
             storage.upsert_ohlcv(db_path, ticker, bounded)
@@ -173,7 +173,8 @@ def _refresh_missing_ranges(
                 {
                     "ticker": ticker,
                     "requested_start": start.isoformat(),
-                    "requested_end": resolved_session.isoformat(),
+                    "requested_end_inclusive": resolved_session.isoformat(),
+                    "raw_provider_end_exclusive": (resolved_session + timedelta(days=1)).isoformat(),
                     "downloaded_completed_rows": int(len(bounded)),
                 }
             )

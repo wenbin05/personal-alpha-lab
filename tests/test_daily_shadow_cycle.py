@@ -103,10 +103,10 @@ def test_authorized_refresh_is_bounded_and_creates_one_backup(
             values = np.array([120.0, 121.0])
             return pd.DataFrame(
                 {
+                    "date": [completed.date().isoformat(), incomplete.date().isoformat()],
                     "open": values, "high": values, "low": values, "close": values,
                     "adj_close": values, "volume": np.array([2_000_000.0, 2_000_000.0]),
-                },
-                index=[completed, incomplete],
+                }
             )
 
     monkeypatch.setattr(market_data, "get_provider", lambda _name: Provider())
@@ -131,6 +131,33 @@ def test_authorized_refresh_is_bounded_and_creates_one_backup(
     with storage.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ohlcv_cache WHERE date='2024-04-02'").fetchone()[0] == 0
     assert len(list_shadow_prediction_runs(db_path)) == 2
+
+
+def test_failed_refresh_does_not_create_prediction_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path, artifact_id = _seed_shadow_environment(tmp_path)
+    apply_shadow_prediction(db_path, artifact_id, AS_OF)
+
+    class EmptyProvider:
+        def download_history(self, ticker, period="2y", start=None, end=None):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(market_data, "get_provider", lambda _name: EmptyProvider())
+    monkeypatch.setattr(cycle_module, "_backup_database", lambda path: Path(str(path) + ".backup"))
+    reference = datetime(2024, 4, 2, 0, 0, tzinfo=UTC)
+
+    report = run_daily_shadow_cycle(
+        db_path,
+        artifact_id=artifact_id,
+        apply=True,
+        refresh_market_data=True,
+        reference_time=reference,
+    )
+
+    assert report["status"] == "failed"
+    assert report["refresh_failures"]
+    assert len(list_shadow_prediction_runs(db_path)) == 1
 
 
 def test_outcomes_are_applied_before_new_prediction(

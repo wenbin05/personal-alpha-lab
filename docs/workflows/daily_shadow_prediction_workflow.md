@@ -112,4 +112,6 @@ To explicitly authorize bounded yfinance refreshes for missing ranges before app
 
 The coordinator uses a process lock and creates one timestamped SQLite backup immediately before the first mutation. It filters downloaded rows through the resolved completed session, applies matured outcomes before recording a new prediction, skips an existing date/artifact run, and never backfills older prediction dates. A repeat invocation is therefore a safe no-op when no outcome or prediction work remains. No network call is possible without both `--apply` and `--refresh-market-data`.
 
+The market-data provider accepts an inclusive end-session contract and advances it by one calendar day for yfinance's exclusive raw `end`. The cycle filters the provider's normalized `date` column, retaining only dates from the missing-range start through the resolved completed session. It never interprets a normalized frame's integer index as a trading date, and it discards any later incomplete-session row.
+
 The command prints JSON and accepts `--output <path>` for scheduler capture. Exit code 0 means completed or safely no-op; a nonzero code indicates lock, artifact, refresh, database, or prediction failure. This command does not install cron, launchd, or a background process.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -31,6 +32,64 @@ def test_normalize_ohlcv_accepts_lowercase_datetime_index() -> None:
     assert not normalized.empty
     assert list(normalized.columns) == storage.OHLCV_COLUMNS
     assert normalized["date"].notna().all()
+
+
+def test_yfinance_daily_end_is_advanced_for_exclusive_provider_boundary(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class FakeTicker:
+        def __init__(self, ticker: str):
+            self.ticker = ticker
+
+        def history(self, **kwargs):
+            calls.append((self.ticker, kwargs))
+            frame = sample_ohlcv(1)
+            frame.index = pd.to_datetime(["2026-07-13"])
+            return frame
+
+    monkeypatch.setitem(__import__("sys").modules, "yfinance", SimpleNamespace(Ticker=FakeTicker))
+    result = market_data.YFinanceProvider().download_history(
+        "AAPL", start=date(2026, 7, 13), end=date(2026, 7, 13)
+    )
+
+    assert calls == [
+        (
+            "AAPL",
+            {
+                "interval": "1d",
+                "auto_adjust": False,
+                "start": "2026-07-13",
+                "end": "2026-07-14",
+            },
+        )
+    ]
+    assert result["date"].tolist() == ["2026-07-13"]
+
+
+def test_yfinance_exclusive_end_handles_friday_holiday_boundary_and_vix(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeTicker:
+        def __init__(self, ticker: str):
+            self.ticker = ticker
+
+        def history(self, **kwargs):
+            calls.append((self.ticker, kwargs["end"]))
+            frame = sample_ohlcv(1)
+            frame.index = pd.to_datetime([kwargs["start"]])
+            return frame
+
+    monkeypatch.setitem(__import__("sys").modules, "yfinance", SimpleNamespace(Ticker=FakeTicker))
+    provider = market_data.YFinanceProvider()
+    provider.download_history("AAPL", start="2026-07-10", end="2026-07-10")
+    provider.download_history("AAPL", start="2025-01-08", end="2025-01-08")
+    provider.download_history("^VIX", start="2026-07-13", end="2026-07-13")
+
+    assert calls == [
+        ("AAPL", "2026-07-11"),
+        ("AAPL", "2025-01-09"),
+        ("^VIX", "2026-07-14"),
+    ]
 
 
 def test_get_history_refreshes_when_cache_is_too_short_for_period(tmp_path, monkeypatch) -> None:

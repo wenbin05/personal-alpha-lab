@@ -74,6 +74,8 @@ Phase 3A-2A refreshed only the authorized missing OHLCV ranges through 2026-07-1
 
 Phase 3A-2B adds `scripts/run_daily_shadow_cycle.py`, a dry-run-first scheduler-ready coordinator for the existing refresh, maturity, prediction, and status contracts. Network refresh requires explicit `--apply --refresh-market-data`; mutating cycles use one lock and one backup, outcomes are appended before at most one current-session prediction, and repeat invocations safely no-op. No scheduler daemon is installed.
 
+Phase 3A-2C corrected the cycle's completed-session refresh boundary. The provider already translated inclusive 2026-07-13 into yfinance's exclusive 2026-07-14 end; the defect was filtering the normalized response by its integer index instead of its `date` column. The controlled retry refreshed 26 missing symbols through 2026-07-13, retained no later rows, and created immutable run 3 with 26 predictions. A repeat cycle was a no-op. Shadow monitoring now has 3 prediction dates, 78 predictions, and 52 matured outcomes; the sample remains `insufficient_forward_sample`.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
@@ -86,6 +88,7 @@ Phase 3A-2B adds `scripts/run_daily_shadow_cycle.py`, a dry-run-first scheduler-
 - Phase 3A-1B: immutable cache-only shadow outcome maturity tracking
 - Phase 3A-2A: controlled OHLCV refresh, run 1 maturity update, and immutable run 2
 - Phase 3A-2B: one-command guarded daily shadow cycle
+- Phase 3A-2C: normalized-date OHLCV refresh fix and immutable run 3
 - Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints
