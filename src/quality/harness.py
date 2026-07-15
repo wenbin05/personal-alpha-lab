@@ -18,6 +18,7 @@ from src.modeling.annotation_features import build_annotation_coverage_audit, de
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
 from src.modeling.artifacts import check_registered_artifact
 from src.modeling.shadow_predictions import shadow_status_report
+from src.modeling.shadow_portfolios import portfolio_shadow_status
 from src.modeling.repository import list_model_final_metrics
 from src.options_research.snapshots import options_status_report
 
@@ -395,6 +396,26 @@ def check_shadow_status(db_path: str | Path, artifact_id: str | None = None) -> 
         "benchmark_exclusion_count": report.get("benchmark_exclusion_count"),
         "violation_count": len(report.get("violations", [])),
         "shadow_status_check": status,
+    }
+    return HarnessResult(status=status, summary=summary, details=report)
+
+
+def check_portfolio_shadow_status(db_path: str | Path) -> HarnessResult:
+    report = portfolio_shadow_status(db_path)
+    status = str(report.get("status") or "failed")
+    summary = {
+        "policy_id": report.get("policy_id"),
+        "policy_registered": report.get("policy_registered"),
+        "registered_at": report.get("registered_at"),
+        "eligible_after_prediction_run_id": report.get("eligible_after_prediction_run_id"),
+        "next_eligible_prediction_run_id_floor": report.get("next_eligible_prediction_run_id_floor"),
+        "next_available_prediction_run": report.get("next_available_prediction_run"),
+        "cohort_count": report.get("cohort_count"),
+        "matured_cohort_count": report.get("matured_cohort_count"),
+        "pending_cohort_count": report.get("pending_cohort_count"),
+        "sample_status": report.get("sample_status"),
+        "violation_count": len(report.get("violations", [])),
+        "portfolio_shadow_status_check": status,
     }
     return HarnessResult(status=status, summary=summary, details=report)
 

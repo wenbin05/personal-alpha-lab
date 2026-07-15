@@ -78,6 +78,8 @@ Phase 3A-2C corrected the cycle's completed-session refresh boundary. The provid
 
 Phase 3B-1 adds a separate prospective options snapshot track for eight liquid equities. Daily yfinance chains are dry-run-first, immutable, duplicate-safe, and summarized with descriptive open-interest, volume, IV, concentration, liquidity, and missingness metrics. The track does not backfill history or affect datasets, shadow predictions, catalysts, scanner scoring, or recommendations. Use `scripts/collect_options_snapshots.py` for explicit collection and `scripts/quality_harness.py options-status` for read-only monitoring. The first controlled apply was safely blocked because the U.S. session was still open; production contains zero options snapshot runs and the first post-close collection remains pending.
 
+Phase 3C-1 registered immutable research-only portfolio policy `top5_equal_weight_5session_v1` at `2026-07-15T15:25:51+00:00`. It is bound to `shadow_ridge_technical_v1_1ee8071db3f0`, excludes SPY, selects the top five stored equity ranks at 20% each, holds from the next-session close through five sessions after entry, and charges 10 basis points per side. The registration boundary is shadow run 4, so runs 1-4 are permanently excluded and the first eligible cohort may only use run 5 or later. No cohort or portfolio outcome exists yet; sample status is `insufficient_forward_sample`.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
@@ -92,6 +94,7 @@ Phase 3B-1 adds a separate prospective options snapshot track for eight liquid e
 - Phase 3A-2B: one-command guarded daily shadow cycle
 - Phase 3A-2C: normalized-date OHLCV refresh fix and immutable run 3
 - Phase 3B-1: prospective options snapshot storage, collection, monitoring, and read-only UI
+- Phase 3C-1: immutable prospective shadow portfolio policy and cohort/outcome foundation
 - Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints

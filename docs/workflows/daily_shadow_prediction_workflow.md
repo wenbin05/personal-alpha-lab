@@ -115,3 +115,7 @@ The coordinator uses a process lock and creates one timestamped SQLite backup im
 The market-data provider accepts an inclusive end-session contract and advances it by one calendar day for yfinance's exclusive raw `end`. The cycle filters the provider's normalized `date` column, retaining only dates from the missing-range start through the resolved completed session. It never interprets a normalized frame's integer index as a trading date, and it discards any later incomplete-session row.
 
 The command prints JSON and accepts `--output <path>` for scheduler capture. Exit code 0 means completed or safely no-op; a nonzero code indicates lock, artifact, refresh, database, or prediction failure. This command does not install cron, launchd, or a background process.
+
+## Prospective Portfolio Cohorts
+
+The optional portfolio cohort layer is governed separately by `docs/workflows/prospective_shadow_portfolio_workflow.md`. It may consume only shadow runs created after its policy registration boundary. Daily shadow inference does not automatically create cohorts, and portfolio records never modify prediction ranks or scanner scores.

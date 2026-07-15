@@ -185,6 +185,7 @@ from src.modeling.diagnostics import (
 from src.modeling.evaluation_regime import get_dataset_evaluation_regime
 from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout_extension_plan
 from src.modeling.shadow_predictions import list_shadow_prediction_runs, list_shadow_predictions, shadow_status_report
+from src.modeling.shadow_portfolios import portfolio_shadow_status
 from src.modeling.repository import (
     list_model_final_metrics,
     list_model_fold_metrics,
@@ -2595,6 +2596,52 @@ def shadow_research_page(settings: Settings) -> None:
         hide_index=True,
     )
     st.caption("Predictions are immutable research records and are never combined with the Daily Scanner score.")
+
+    st.subheader("Shadow Portfolio")
+    portfolio = portfolio_shadow_status(settings.database_file)
+    if not portfolio.get("policy_registered"):
+        st.info("The prospective shadow portfolio policy is not registered yet.")
+        return
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Cohorts", int(portfolio.get("cohort_count", 0)))
+    p2.metric("Matured", int(portfolio.get("matured_cohort_count", 0)))
+    p3.metric("Portfolio sample", str(portfolio.get("sample_status", "insufficient_forward_sample")))
+    st.caption(
+        f"Policy: {portfolio['policy_id']} | registered: {portfolio['registered_at']} | "
+        "top five equities, 20% each, long-only, 10 bps per side | scanner contribution: 0"
+    )
+    if portfolio.get("sample_status") == "insufficient_forward_sample":
+        st.warning("Fewer than 20 matured cohorts; performance conclusions are not supported.")
+    cohorts = pd.DataFrame(portfolio.get("cohorts", []))
+    if cohorts.empty:
+        st.info(
+            f"No prospective cohorts yet. Runs through {portfolio['eligible_after_prediction_run_id']} are "
+            "permanently excluded; creation begins with the next new shadow run."
+        )
+        return
+    cohort_columns = [
+        "cohort_id", "prediction_run_id", "prediction_date", "entry_date", "exit_date",
+        "constituent_count", "gross_return", "transaction_cost_return", "net_return",
+        "benchmark_return", "excess_return", "label_available_at",
+    ]
+    st.dataframe(
+        dataframe_for_streamlit(cohorts[[column for column in cohort_columns if column in cohorts.columns]]),
+        width="stretch",
+        hide_index=True,
+    )
+    constituents = pd.DataFrame(portfolio.get("constituents", []))
+    if not constituents.empty:
+        st.caption("Immutable constituent selections")
+        selection_columns = [
+            "cohort_id", "prediction_run_id", "prediction_date", "predicted_rank", "ticker", "weight"
+        ]
+        st.dataframe(
+            dataframe_for_streamlit(
+                constituents[[column for column in selection_columns if column in constituents.columns]]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def options_research_page(settings: Settings) -> None:

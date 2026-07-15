@@ -837,6 +837,108 @@ def init_db(db_path: str | Path) -> None:
             BEGIN
                 SELECT RAISE(ABORT, 'options_snapshots rows are immutable');
             END;
+
+            CREATE TABLE IF NOT EXISTS shadow_portfolio_policies (
+                policy_id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                evaluation_regime TEXT NOT NULL,
+                selection_count INTEGER NOT NULL,
+                weighting_method TEXT NOT NULL,
+                holding_period_sessions INTEGER NOT NULL,
+                transaction_cost_bps_per_side REAL NOT NULL,
+                benchmark_ticker TEXT NOT NULL,
+                registered_at TEXT NOT NULL,
+                eligible_after_prediction_run_id INTEGER NOT NULL,
+                policy_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS shadow_portfolio_cohorts (
+                cohort_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy_id TEXT NOT NULL,
+                prediction_run_id INTEGER NOT NULL,
+                prediction_date TEXT NOT NULL,
+                entry_date TEXT NOT NULL,
+                exit_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                constituent_count INTEGER NOT NULL,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (policy_id) REFERENCES shadow_portfolio_policies(policy_id),
+                FOREIGN KEY (prediction_run_id) REFERENCES shadow_prediction_runs(run_id),
+                UNIQUE(policy_id, prediction_run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS shadow_portfolio_constituents (
+                constituent_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cohort_id INTEGER NOT NULL,
+                prediction_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                predicted_rank INTEGER NOT NULL,
+                weight REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (cohort_id) REFERENCES shadow_portfolio_cohorts(cohort_id),
+                FOREIGN KEY (prediction_id) REFERENCES shadow_predictions(prediction_id),
+                UNIQUE(cohort_id, ticker),
+                UNIQUE(cohort_id, prediction_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS shadow_portfolio_outcomes (
+                outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cohort_id INTEGER NOT NULL UNIQUE,
+                entry_date TEXT NOT NULL,
+                exit_date TEXT NOT NULL,
+                gross_return REAL NOT NULL,
+                transaction_cost_return REAL NOT NULL,
+                net_return REAL NOT NULL,
+                benchmark_return REAL NOT NULL,
+                excess_return REAL NOT NULL,
+                label_available_at TEXT NOT NULL,
+                evaluated_at TEXT NOT NULL,
+                constituent_returns_json TEXT NOT NULL,
+                data_quality_flags_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (cohort_id) REFERENCES shadow_portfolio_cohorts(cohort_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_shadow_portfolio_cohorts_policy_date
+                ON shadow_portfolio_cohorts (policy_id, prediction_date);
+
+            CREATE INDEX IF NOT EXISTS idx_shadow_portfolio_constituents_cohort
+                ON shadow_portfolio_constituents (cohort_id, predicted_rank, ticker);
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_policies_immutable_update
+            BEFORE UPDATE ON shadow_portfolio_policies
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio policies are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_policies_immutable_delete
+            BEFORE DELETE ON shadow_portfolio_policies
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio policies are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_cohorts_immutable_update
+            BEFORE UPDATE ON shadow_portfolio_cohorts
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio cohorts are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_cohorts_immutable_delete
+            BEFORE DELETE ON shadow_portfolio_cohorts
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio cohorts are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_constituents_immutable_update
+            BEFORE UPDATE ON shadow_portfolio_constituents
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio constituents are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_constituents_immutable_delete
+            BEFORE DELETE ON shadow_portfolio_constituents
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio constituents are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_outcomes_immutable_update
+            BEFORE UPDATE ON shadow_portfolio_outcomes
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio outcomes are immutable'); END;
+
+            CREATE TRIGGER IF NOT EXISTS shadow_portfolio_outcomes_immutable_delete
+            BEFORE DELETE ON shadow_portfolio_outcomes
+            BEGIN SELECT RAISE(ABORT, 'shadow portfolio outcomes are immutable'); END;
             """
         )
         _migrate_source_document_hash_scope(conn)
