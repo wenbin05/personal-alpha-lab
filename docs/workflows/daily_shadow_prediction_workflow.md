@@ -119,3 +119,25 @@ The command prints JSON and accepts `--output <path>` for scheduler capture. Exi
 ## Prospective Portfolio Cohorts
 
 The optional portfolio cohort layer is governed separately by `docs/workflows/prospective_shadow_portfolio_workflow.md`. It may consume only shadow runs created after its policy registration boundary. Daily shadow inference does not automatically create cohorts, and portfolio records never modify prediction ranks or scanner scores.
+
+## Permanent Daily Research Entry Point
+
+Use the stable scheduler-facing command for routine operation:
+
+```bash
+.venv/bin/python scripts/run_daily_research_cycle.py --dry-run
+```
+
+Actual operation and all permitted yfinance calls require both flags:
+
+```bash
+.venv/bin/python scripts/run_daily_research_cycle.py \
+  --apply \
+  --refresh-market-data
+```
+
+The permanent entry point runs the existing components in this order: daily shadow refresh/outcomes/prediction, eligible prospective portfolio cohort creation, portfolio outcome maturity, then the eight-ticker options snapshot. It owns a master advisory lock while each component retains its own integrity, immutability, completed-session, and duplicate guards. Component failures are isolated in one JSON report with `healthy`, `no_op`, `partial_failure`, or `failed` status.
+
+Dry-run is the default and makes no database changes or network calls. Apply without `--refresh-market-data` may append cache-only shadow or portfolio records but cannot call yfinance and skips options collection. Duplicate shadow, cohort, and options records are safely skipped. The command does not backfill prediction dates, retrain models, alter scanner scores, or evaluate Dataset 50.
+
+This command is the scheduler contract. Add future accepted daily research components behind it instead of editing a scheduled task. The earlier `run_daily_shadow_cycle.py` and component commands remain supported for focused diagnostics and recovery.

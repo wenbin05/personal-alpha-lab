@@ -80,6 +80,8 @@ Phase 3B-1 adds a separate prospective options snapshot track for eight liquid e
 
 Phase 3C-1 registered immutable research-only portfolio policy `top5_equal_weight_5session_v1` at `2026-07-15T15:25:51+00:00`. It is bound to `shadow_ridge_technical_v1_1ee8071db3f0`, excludes SPY, selects the top five stored equity ranks at 20% each, holds from the next-session close through five sessions after entry, and charges 10 basis points per side. The registration boundary is shadow run 4, so runs 1-4 are permanently excluded and the first eligible cohort may only use run 5 or later. No cohort or portfolio outcome exists yet; sample status is `insufficient_forward_sample`.
 
+Phase 3C-2 adds `scripts/run_daily_research_cycle.py` as the permanent scheduler-facing entry point. It holds one master advisory lock and delegates, in order, to the existing shadow cycle, prospective portfolio cohort creation, portfolio outcome maturity, and eight-ticker options collection. Dry-run makes no database changes or network calls; yfinance access requires explicit `--apply --refresh-market-data`. Duplicate records safely skip, component failures remain isolated in a combined JSON report, and no model, policy, scanner, Dataset 49, or Dataset 50 contract changes. The first production dry-run resolved 2026-07-14, found shadow run 4 already recorded, planned no cohort, and made no mutation or network call.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
@@ -95,6 +97,7 @@ Phase 3C-1 registered immutable research-only portfolio policy `top5_equal_weigh
 - Phase 3A-2C: normalized-date OHLCV refresh fix and immutable run 3
 - Phase 3B-1: prospective options snapshot storage, collection, monitoring, and read-only UI
 - Phase 3C-1: immutable prospective shadow portfolio policy and cohort/outcome foundation
+- Phase 3C-2: stable scheduler-facing daily research-cycle orchestrator
 - Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints
