@@ -76,6 +76,8 @@ Phase 3A-2B adds `scripts/run_daily_shadow_cycle.py`, a dry-run-first scheduler-
 
 Phase 3A-2C corrected the cycle's completed-session refresh boundary. The provider already translated inclusive 2026-07-13 into yfinance's exclusive 2026-07-14 end; the defect was filtering the normalized response by its integer index instead of its `date` column. The controlled retry refreshed 26 missing symbols through 2026-07-13, retained no later rows, and created immutable run 3 with 26 predictions. A repeat cycle was a no-op. Shadow monitoring now has 3 prediction dates, 78 predictions, and 52 matured outcomes; the sample remains `insufficient_forward_sample`.
 
+Phase 3B-1 adds a separate prospective options snapshot track for eight liquid equities. Daily yfinance chains are dry-run-first, immutable, duplicate-safe, and summarized with descriptive open-interest, volume, IV, concentration, liquidity, and missingness metrics. The track does not backfill history or affect datasets, shadow predictions, catalysts, scanner scoring, or recommendations. Use `scripts/collect_options_snapshots.py` for explicit collection and `scripts/quality_harness.py options-status` for read-only monitoring. The first controlled apply was safely blocked because the U.S. session was still open; production contains zero options snapshot runs and the first post-close collection remains pending.
+
 ## Latest Completed Work
 
 - Phase 2E-1: compliant provider readiness
@@ -89,6 +91,7 @@ Phase 3A-2C corrected the cycle's completed-session refresh boundary. The provid
 - Phase 3A-2A: controlled OHLCV refresh, run 1 maturity update, and immutable run 2
 - Phase 3A-2B: one-command guarded daily shadow cycle
 - Phase 3A-2C: normalized-date OHLCV refresh fix and immutable run 3
+- Phase 3B-1: prospective options snapshot storage, collection, monitoring, and read-only UI
 - Latest accepted pre-Phase 2E-5B1 commit: `12e02d8 Add company IR document coverage audit`
 
 ## Hard Constraints

@@ -13,6 +13,7 @@ from src.modeling.repository import insert_final_metric, insert_model_run
 from src.quality.harness import (
     check_annotation_coverage,
     check_dataset_manifest,
+    check_options_status,
     compare_model_run_to_baseline,
     compare_scanner_snapshots,
     normalize_scanner_snapshot,
@@ -117,6 +118,19 @@ def test_dataset_manifest_check_passes_and_detects_label_leak(tmp_path) -> None:
     failed = check_dataset_manifest(db_path, leaky_dataset_id)
     assert failed.status == "failed"
     assert "forbidden" in failed.details["violations"][0]
+
+
+def test_options_status_harness_is_read_only_and_handles_empty_database(tmp_path) -> None:
+    db_path = tmp_path / "alpha.db"
+    storage.init_db(db_path)
+    before = db_path.stat().st_size
+
+    result = check_options_status(db_path)
+
+    assert result.status == "passed"
+    assert result.summary["run_count"] == 0
+    assert result.summary["sample_status"] == "collection_only"
+    assert db_path.stat().st_size == before
 
 
 def test_model_compare_reports_metric_deltas(tmp_path) -> None:

@@ -21,6 +21,7 @@ from src.quality.harness import (
     check_document_coverage,
     check_holdout_status,
     check_model_artifact,
+    check_options_status,
     check_shadow_status,
     check_provider_readiness,
     compare_model_run_to_baseline,
@@ -128,6 +129,15 @@ def model_artifact_check(args: argparse.Namespace) -> int:
 
 def shadow_status(args: argparse.Namespace) -> int:
     result = check_shadow_status(_db_path(args.db), artifact_id=args.artifact_id)
+    payload = {"status": result.status, "summary": result.summary, "details": result.details}
+    if args.output:
+        write_json_artifact(args.output, payload)
+    _print_result(payload)
+    return 0 if result.status == "passed" else 2
+
+
+def options_status(args: argparse.Namespace) -> int:
+    result = check_options_status(_db_path(args.db))
     payload = {"status": result.status, "summary": result.summary, "details": result.details}
     if args.output:
         write_json_artifact(args.output, payload)
@@ -246,6 +256,10 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--artifact-id")
     cmd.add_argument("--output")
     cmd.set_defaults(func=shadow_status)
+
+    cmd = sub.add_parser("options-status", help="Audit prospective options snapshot coverage and integrity.")
+    cmd.add_argument("--output")
+    cmd.set_defaults(func=options_status)
 
     cmd = sub.add_parser("health-check", help="Check Streamlit health endpoint without stopping the server.")
     cmd.add_argument("--url", default="http://localhost:8501/_stcore/health")

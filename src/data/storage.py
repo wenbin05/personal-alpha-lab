@@ -774,6 +774,69 @@ def init_db(db_path: str | Path) -> None:
             BEGIN
                 SELECT RAISE(ABORT, 'model_artifacts rows are immutable');
             END;
+
+            CREATE TABLE IF NOT EXISTS options_snapshot_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_date TEXT NOT NULL,
+                as_of_timestamp TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                universe_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                ticker_count INTEGER NOT NULL,
+                warnings TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                UNIQUE(snapshot_date, provider)
+            );
+
+            CREATE TABLE IF NOT EXISTS options_snapshots (
+                snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                expiration TEXT NOT NULL,
+                underlying_price REAL,
+                option_type TEXT NOT NULL,
+                strike REAL,
+                bid REAL,
+                ask REAL,
+                last_price REAL,
+                volume REAL,
+                open_interest REAL,
+                implied_volatility REAL,
+                in_the_money INTEGER,
+                contract_symbol TEXT NOT NULL,
+                provider_timestamp TEXT,
+                created_at TEXT NOT NULL,
+                data_quality_flags TEXT NOT NULL DEFAULT '[]',
+                FOREIGN KEY (run_id) REFERENCES options_snapshot_runs(run_id),
+                UNIQUE(run_id, ticker, expiration, option_type, contract_symbol)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_options_snapshots_run_ticker
+                ON options_snapshots (run_id, ticker, expiration, option_type);
+
+            CREATE TRIGGER IF NOT EXISTS options_snapshot_runs_immutable_update
+            BEFORE UPDATE ON options_snapshot_runs
+            BEGIN
+                SELECT RAISE(ABORT, 'options_snapshot_runs rows are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS options_snapshot_runs_immutable_delete
+            BEFORE DELETE ON options_snapshot_runs
+            BEGIN
+                SELECT RAISE(ABORT, 'options_snapshot_runs rows are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS options_snapshots_immutable_update
+            BEFORE UPDATE ON options_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'options_snapshots rows are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS options_snapshots_immutable_delete
+            BEFORE DELETE ON options_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'options_snapshots rows are immutable');
+            END;
             """
         )
         _migrate_source_document_hash_scope(conn)

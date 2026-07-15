@@ -193,6 +193,7 @@ from src.modeling.repository import (
 )
 from src.modeling.runner import latest_accepted_dataset_id, run_single_baseline_model
 from src.modeling.targets import RAW_TARGET_5_SESSION, get_target_definition, target_options, target_metadata
+from src.options_research.snapshots import latest_options_summaries, options_status_report
 from src.research.llm_placeholder import summarize_ticker_features
 from src.research.news_placeholder import get_news_placeholder
 from src.scoring.risk_rules import calculate_position_size, stop_candidates
@@ -2594,6 +2595,60 @@ def shadow_research_page(settings: Settings) -> None:
         hide_index=True,
     )
     st.caption("Predictions are immutable research records and are never combined with the Daily Scanner score.")
+
+
+def options_research_page(settings: Settings) -> None:
+    st.header("Options Research")
+    st.warning(
+        "Prospective options-chain observations only. These records are research inputs, not dealer-positioning "
+        "estimates, trading recommendations, or scanner inputs."
+    )
+    status = options_status_report(settings.database_file)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Snapshot dates", int(status.get("snapshot_date_count", 0)))
+    c2.metric("Contracts", int(status.get("total_contract_count", 0)))
+    c3.metric("Sample maturity", str(status.get("sample_status", "collection_only")))
+    latest = status.get("latest_run")
+    if latest is None:
+        st.info("No prospective options snapshots have been collected yet.")
+        return
+    st.caption(
+        f"Latest snapshot: {latest['snapshot_date']} | provider: {latest['provider']} | "
+        f"status: {latest['status']} | scanner score contribution: 0"
+    )
+    warnings = json.loads(str(latest.get("warnings") or "[]"))
+    if warnings:
+        st.warning(" | ".join(str(value) for value in warnings))
+    summaries = latest_options_summaries(settings.database_file, int(latest["run_id"]))
+    if summaries.empty:
+        st.info("The latest run contains no option contracts.")
+        return
+    st.subheader("Latest Summary")
+    display_columns = [
+        "ticker",
+        "expiration_count",
+        "valid_contract_count",
+        "put_call_open_interest_ratio",
+        "put_call_volume_ratio",
+        "nearest_expiry_atm_call_iv",
+        "nearest_expiry_atm_put_iv",
+        "atm_put_minus_call_iv",
+        "front_minus_next_expiry_atm_iv",
+        "highest_call_oi_strike",
+        "highest_put_oi_strike",
+        "median_relative_bid_ask_spread",
+        "missing_open_interest_pct",
+        "missing_implied_volatility_pct",
+    ]
+    st.dataframe(
+        dataframe_for_streamlit(summaries[[column for column in display_columns if column in summaries.columns]]),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "Open-interest concentration, IV term differences, and quote spreads are descriptive observations only. "
+        "Missing or zero quotes are excluded from relative-spread calculations."
+    )
 
 
 def model_lab_page(settings: Settings) -> None:

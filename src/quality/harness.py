@@ -19,6 +19,7 @@ from src.modeling.holdout_maturity import assess_holdout_maturity, build_holdout
 from src.modeling.artifacts import check_registered_artifact
 from src.modeling.shadow_predictions import shadow_status_report
 from src.modeling.repository import list_model_final_metrics
+from src.options_research.snapshots import options_status_report
 
 
 SCANNER_COMPARE_FIELDS = ("score", "label", "risk_label", "catalyst_score")
@@ -394,6 +395,23 @@ def check_shadow_status(db_path: str | Path, artifact_id: str | None = None) -> 
         "benchmark_exclusion_count": report.get("benchmark_exclusion_count"),
         "violation_count": len(report.get("violations", [])),
         "shadow_status_check": status,
+    }
+    return HarnessResult(status=status, summary=summary, details=report)
+
+
+def check_options_status(db_path: str | Path) -> HarnessResult:
+    report = options_status_report(db_path)
+    status = str(report.get("status") or "failed")
+    summary = {
+        "run_count": report.get("run_count"),
+        "snapshot_date_count": report.get("snapshot_date_count"),
+        "snapshot_date_range": report.get("snapshot_date_range"),
+        "sample_status": report.get("sample_status"),
+        "total_contract_count": report.get("total_contract_count", 0),
+        "missingness": report.get("missingness", {}),
+        "duplicate_run_count": report.get("duplicate_run_count", 0),
+        "duplicate_contract_count": report.get("duplicate_contract_count", 0),
+        "options_status_check": status,
     }
     return HarnessResult(status=status, summary=summary, details=report)
 
